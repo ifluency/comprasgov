@@ -39,4 +39,6 @@ jobs:
           COMPRAS_PAGE_SIZE: "500"
           DAILY_LOOKBACK_DAYS: "45"
         run: |
-          python src/ingest_arp.py
+          python -u src/ingest_arp.py
+          python -u src/migrate.py
+
