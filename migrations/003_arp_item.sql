@@ -24,10 +24,17 @@ create table if not exists arp_item (
   payload jsonb not null,
 
   first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now(),
-
-  constraint uq_arp_item unique (codigo_unidade_gerenciadora, numero_controle_pncp_ata, coalesce(item_id,''), coalesce(numero_item,-1))
+  last_seen_at timestamptz not null default now()
 );
+
+-- ✅ UNIQUE por expressão precisa ser INDEX (não constraint)
+create unique index if not exists uq_arp_item_expr
+  on arp_item (
+    codigo_unidade_gerenciadora,
+    numero_controle_pncp_ata,
+    coalesce(item_id,''),
+    coalesce(numero_item,-1)
+  );
 
 create index if not exists idx_arp_item_controle
   on arp_item (numero_controle_pncp_ata);
