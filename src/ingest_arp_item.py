@@ -28,6 +28,7 @@ def parse_dt(value):
     if value is None or value == "":
         return None
     try:
+        # aceita "2025-11-25T09:24:47"
         return dt.datetime.fromisoformat(value)
     except Exception:
         return None
@@ -87,9 +88,6 @@ def insert_raw(conn, endpoint_name: str, params: dict, payload, payload_sha: str
 
 
 def select_arp_targets(conn, limit: int):
-    """
-    Puxa ARPs mais recentes que têm numeroControlePncpAta no payload.
-    """
     sql = """
     select
       codigo_unidade_gerenciadora,
@@ -116,26 +114,47 @@ def extract_items(data):
 
 
 def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
-    """
-    Upsert conforme payload real do Swagger.
-
-    OBS: Por enquanto, mantemos colunas normalizadas mínimas e guardamos o JSON inteiro no payload.
-    """
     item_sha = sha256_json(item)
 
+    # Campos do payload real
     numero_ata = item.get("numeroAtaRegistroPreco")
+    codigo_ug = item.get("codigoUnidadeGerenciadora")
 
-    # Chaves relevantes no payload real
-    codigo_item = item.get("codigoItem")  # usamos como item_id
+    numero_item_str = item.get("numeroItem")  # "00005"
+    codigo_item = item.get("codigoItem")
     descricao_item = item.get("descricaoItem")
+    tipo_item = item.get("tipoItem")
 
     qtd_item = item.get("quantidadeHomologadaItem")
     qtd_vencedor = item.get("quantidadeHomologadaVencedor")
+
     valor_unit = item.get("valorUnitario")
     valor_total = item.get("valorTotal")
+    maximo_adesao = item.get("maximoAdesao")
 
-    # Escolhe a quantidade mais útil (vencedor se existir)
-    quantidade = qtd_vencedor if qtd_vencedor is not None else qtd_item
+    classificacao_fornecedor = item.get("classificacaoFornecedor")
+    ni_fornecedor = item.get("niFornecedor")
+    nome_fornecedor = item.get("nomeRazaoSocialFornecedor")
+    situacao_sicaf = item.get("situacaoSicaf")
+
+    codigo_pdm = item.get("codigoPdm")
+    nome_pdm = item.get("nomePdm")
+
+    numero_compra = item.get("numeroCompra")
+    ano_compra = item.get("anoCompra")
+    codigo_modalidade = item.get("codigoModalidadeCompra")
+
+    id_compra = item.get("idCompra")
+    numero_controle_compra = item.get("numeroControlePncpCompra")
+
+    data_hora_inclusao = parse_dt(item.get("dataHoraInclusao"))
+    data_hora_atualizacao = parse_dt(item.get("dataHoraAtualizacao"))
+    data_hora_exclusao = parse_dt(item.get("dataHoraExclusao"))
+    item_excluido = item.get("itemExcluido")
+
+    # Para o schema atual (003) a chave do upsert usa item_id(text) e numero_item(int).
+    # Vamos usar item_id = codigoItem (string) e manter numero_item = NULL.
+    item_id = str(codigo_item) if codigo_item is not None else None
 
     with conn.cursor() as cur:
         cur.execute(
@@ -156,6 +175,29 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
               catmat,
               catsrv,
 
+              -- colunas normalizadas (004)
+              numero_item_str,
+              codigo_item,
+              tipo_item,
+              quantidade_homologada_item,
+              quantidade_homologada_vencedor,
+              maximo_adesao,
+              classificacao_fornecedor,
+              ni_fornecedor,
+              nome_fornecedor,
+              situacao_sicaf,
+              codigo_pdm,
+              nome_pdm,
+              numero_compra,
+              ano_compra,
+              codigo_modalidade_compra,
+              id_compra,
+              numero_controle_pncp_compra,
+              data_hora_inclusao,
+              data_hora_atualizacao,
+              data_hora_exclusao,
+              item_excluido,
+
               payload_sha256,
               payload,
               first_seen_at,
@@ -164,18 +206,53 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
             values (
               %s, %s, %s,
               %s, %s,
+
               %s, %s, %s, %s, %s,
               %s, %s,
+
+              %s, %s, %s,
+              %s, %s, %s,
+              %s, %s, %s, %s,
+              %s, %s,
+              %s, %s, %s,
+              %s, %s,
+              %s, %s, %s,
+              %s,
+
               %s, %s::jsonb,
               now(), now()
             )
             on conflict (codigo_unidade_gerenciadora, numero_controle_pncp_ata, coalesce(item_id,''), coalesce(numero_item,-1))
             do update set
               numero_ata_registro_preco = excluded.numero_ata_registro_preco,
+
               descricao = excluded.descricao,
               quantidade = excluded.quantidade,
               valor_unitario = excluded.valor_unitario,
               valor_total = excluded.valor_total,
+
+              numero_item_str = excluded.numero_item_str,
+              codigo_item = excluded.codigo_item,
+              tipo_item = excluded.tipo_item,
+              quantidade_homologada_item = excluded.quantidade_homologada_item,
+              quantidade_homologada_vencedor = excluded.quantidade_homologada_vencedor,
+              maximo_adesao = excluded.maximo_adesao,
+              classificacao_fornecedor = excluded.classificacao_fornecedor,
+              ni_fornecedor = excluded.ni_fornecedor,
+              nome_fornecedor = excluded.nome_fornecedor,
+              situacao_sicaf = excluded.situacao_sicaf,
+              codigo_pdm = excluded.codigo_pdm,
+              nome_pdm = excluded.nome_pdm,
+              numero_compra = excluded.numero_compra,
+              ano_compra = excluded.ano_compra,
+              codigo_modalidade_compra = excluded.codigo_modalidade_compra,
+              id_compra = excluded.id_compra,
+              numero_controle_pncp_compra = excluded.numero_controle_pncp_compra,
+              data_hora_inclusao = excluded.data_hora_inclusao,
+              data_hora_atualizacao = excluded.data_hora_atualizacao,
+              data_hora_exclusao = excluded.data_hora_exclusao,
+              item_excluido = excluded.item_excluido,
+
               payload_sha256 = excluded.payload_sha256,
               payload = excluded.payload,
               last_seen_at = now()
@@ -184,15 +261,39 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
                 ug,
                 numero_ata,
                 numero_controle_ata,
-                str(codigo_item) if codigo_item is not None else None,  # item_id <- codigoItem
-                None,  # numero_item (int) ainda não usamos; numeroItem string fica no payload
+                item_id,
+                None,  # numero_item int não usado
+
                 descricao_item,
-                None,  # unidade não veio no exemplo
-                quantidade,
+                None,
+                qtd_vencedor if qtd_vencedor is not None else qtd_item,
                 valor_unit,
                 valor_total,
                 None,
                 None,
+
+                numero_item_str,
+                int(codigo_item) if isinstance(codigo_item, int) else codigo_item,
+                tipo_item,
+                qtd_item,
+                qtd_vencedor,
+                maximo_adesao,
+                classificacao_fornecedor,
+                ni_fornecedor,
+                nome_fornecedor,
+                situacao_sicaf,
+                codigo_pdm,
+                nome_pdm,
+                numero_compra,
+                ano_compra,
+                codigo_modalidade,
+                id_compra,
+                numero_controle_compra,
+                data_hora_inclusao,
+                data_hora_atualizacao,
+                data_hora_exclusao,
+                item_excluido,
+
                 item_sha,
                 json.dumps(item, ensure_ascii=False),
             ),
@@ -240,14 +341,12 @@ def main():
             print(f"[ARP_ITEM] controle={numero_controle_ata} items={len(items)}", flush=True)
 
             for item in items:
-                # ✅ chamada corrigida (4 args)
                 total_items += upsert_item(conn, ug, numero_controle_ata, item)
 
             conn.commit()
             total_calls += 1
             time.sleep(SLEEP_BETWEEN_CALLS_S)
 
-        # Salva estado simples
         with conn.cursor() as cur:
             cur.execute(
                 """
