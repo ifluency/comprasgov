@@ -1,4 +1,4 @@
-name: Ingest Licitacao (modulo-legado)
+name: Ingest Contratacoes PNCP 14.133
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -30,14 +30,15 @@ jobs:
         run: |
           python -u src/migrate.py
 
-      - name: Ingest Licitacao (modulo-legado)
+      - name: Ingest Contratacoes PNCP 14.133
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
-          COMPRAS_UASG: "155125"
+          COMPRAS_UNIDADE: "155125"
+          COMPRAS_CODIGO_MODALIDADE: "5"
           COMPRAS_PAGE_SIZE: "500"
           COMPRAS_START_DATE: "2024-01-01"
           COMPRAS_MAX_WINDOW_DAYS: "365"
           COMPRAS_SLEEP_S: "0.10"
         run: |
-          python -u src/ingest_licitacao_legado.py
+          python -u src/ingest_contratacoes_pncp_14133.py
