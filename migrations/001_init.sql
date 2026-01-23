@@ -1,69 +1,64 @@
--- RAW (guarda JSON cru)
 create table if not exists api_raw (
-  id             bigserial primary key,
-  endpoint       text not null,
-  params         jsonb not null,
-  collected_at   timestamptz not null default now(),
-  payload        jsonb not null,
-  payload_sha256 text not null
+  id bigserial primary key,
+  endpoint text not null,
+  params jsonb not null,
+  payload jsonb not null,
+  payload_sha256 text not null,
+  fetched_at timestamptz not null default now()
 );
 
-create index if not exists idx_api_raw_endpoint_collected_at
-  on api_raw (endpoint, collected_at desc);
+create index if not exists idx_api_raw_endpoint on api_raw (endpoint);
+create index if not exists idx_api_raw_fetched_at on api_raw (fetched_at);
 
--- Estado do ETL (para incremental/híbrido)
 create table if not exists etl_state (
   name text primary key,
   value jsonb not null,
   updated_at timestamptz not null default now()
 );
 
--- Tabela normalizada ARP
-create table if not exists arp (
+-- Tabela normalizada: licitação (módulo-legado)
+create table if not exists licitacao (
   id bigserial primary key,
 
-  codigo_unidade_gerenciadora integer not null,
-  numero_ata_registro_preco   text not null,
+  -- chave natural recomendada pela API
+  id_compra text not null unique,
 
-  codigo_orgao              integer null,
-  nome_orgao                text null,
-  nome_unidade_gerenciadora text null,
+  identificador text null,
+  numero_processo text null,
 
-  codigo_modalidade_compra  text null,
-  nome_modalidade_compra    text null,
+  uasg integer not null,
+  modalidade integer null,
+  nome_modalidade text null,
+  numero_aviso integer null,
 
-  numero_compra             text null,
-  ano_compra                text null,
+  situacao_aviso text null,
+  tipo_pregao text null,
+  tipo_recurso text null,
 
-  status_ata                text null,
-  objeto                    text null,
+  nome_responsavel text null,
+  funcao_responsavel text null,
 
-  data_assinatura           date null,
-  data_vigencia_inicio      date null,
-  data_vigencia_fim         date null,
+  numero_itens integer null,
+  valor_estimado_total numeric(18,2) null,
+  valor_homologado_total numeric(18,2) null,
 
-  valor_total               numeric(18,2) null,
-  quantidade_itens          integer null,
+  informacoes_gerais text null,
+  objeto text null,
+  endereco_entrega_edital text null,
 
-  link_ata_pncp             text null,
-  link_compra_pncp          text null,
-  numero_controle_pncp_ata  text null,
-  numero_controle_pncp_compra text null,
-  id_compra                 text null,
+  codigo_municipio_uasg integer null,
 
-  data_hora_atualizacao     timestamptz null,
-  data_hora_inclusao        timestamptz null,
-  data_hora_exclusao        timestamptz null,
-  ata_excluido              boolean null,
+  data_abertura_proposta date null,
+  data_entrega_edital date null,
+  data_entrega_proposta date null,
+  data_publicacao date null,
 
-  first_seen_at             timestamptz not null default now(),
-  last_seen_at              timestamptz not null default now(),
-  payload_sha256            text not null,
-  payload                   jsonb not null,
+  dt_alteracao timestamptz null,
+  pertence14133 boolean null,
 
-  constraint uq_arp unique (codigo_unidade_gerenciadora, numero_ata_registro_preco)
+  payload_sha256 text not null,
+  payload jsonb not null,
+
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
 );
-
-create index if not exists idx_arp_last_seen_at on arp (last_seen_at desc);
-create index if not exists idx_arp_data_assinatura on arp (data_assinatura);
-create index if not exists idx_arp_data_vigencia_fim on arp (data_vigencia_fim);
