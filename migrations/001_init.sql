@@ -16,23 +16,20 @@ create table if not exists etl_state (
   updated_at timestamptz not null default now()
 );
 
--- Contratações PNCP 14.133
 create table if not exists contratacao_pncp_14133 (
   id bigserial primary key,
 
-  -- identificador/keys (vamos guardar alguns candidates e também o payload completo)
-  id_pncp text null,
+  id_pncp text not null,
   numero_controle_pncp text null,
   id_compra text null,
 
-  unidade_orgao_codigo_unidade text not null,  -- "155125" vem como string na API
-  codigo_modalidade integer not null,          -- fixo 5 no seu caso (pregão)
+  unidade_orgao_codigo_unidade text not null,
+  codigo_modalidade integer not null,
 
   data_publicacao_pncp date null,
   data_atualizacao_pncp timestamptz null,
   contratacao_excluida boolean null,
 
-  -- campos comuns que costumam existir em contratações PNCP (mantém null se não vier)
   orgao_cnpj text null,
   codigo_orgao integer null,
   unidade_orgao_uf_sigla text null,
@@ -45,11 +42,11 @@ create table if not exists contratacao_pncp_14133 (
   payload jsonb not null,
 
   first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now()
+  last_seen_at timestamptz not null default now(),
+
+  constraint uq_contratacao_id_pncp unique (id_pncp)
 );
 
--- Índice único "flexível": vamos criar depois que confirmarmos qual campo é realmente único no payload.
--- Por enquanto, garantimos desempenho por filtros básicos.
 create index if not exists idx_contratacao_uo_modalidade_data_pub
   on contratacao_pncp_14133 (unidade_orgao_codigo_unidade, codigo_modalidade, data_publicacao_pncp);
 
