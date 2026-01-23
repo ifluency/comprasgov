@@ -1,19 +1,14 @@
--- Índices para performance em consultas comuns
+create index if not exists idx_licitacao_uasg_data_publicacao
+  on licitacao (uasg, data_publicacao);
 
-create index if not exists idx_arp_ug
-  on arp (codigo_unidade_gerenciadora);
+create index if not exists idx_licitacao_dt_alteracao
+  on licitacao (dt_alteracao);
 
-create index if not exists idx_arp_vig_ini
-  on arp (data_vigencia_inicio);
+create index if not exists idx_licitacao_numero_aviso
+  on licitacao (numero_aviso);
 
-create index if not exists idx_arp_vig_fim
-  on arp (data_vigencia_fim);
+create index if not exists idx_licitacao_modalidade
+  on licitacao (modalidade);
 
-create index if not exists idx_arp_status
-  on arp (status_ata);
-
-create index if not exists idx_arp_last_seen
-  on arp (last_seen_at);
-
-create index if not exists idx_api_raw_collected_at
-  on api_raw (collected_at);
+create index if not exists idx_licitacao_objeto_gin
+  on licitacao using gin (to_tsvector('portuguese', coalesce(objeto,'')));
