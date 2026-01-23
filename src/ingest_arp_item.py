@@ -2,6 +2,7 @@ import os
 import json
 import time
 import hashlib
+import datetime as dt
 import requests
 
 from db import get_conn
@@ -12,17 +13,7 @@ UG = int(os.getenv("COMPRAS_UG", "155125"))
 TIMEOUT = int(os.getenv("COMPRAS_TIMEOUT", "60"))
 
 BASE_URL = os.getenv("COMPRAS_BASE_URL", "https://dadosabertos.compras.gov.br").strip().rstrip("/")
-
-# ✅ O seu 404 indica que o PATH com /modulo-arp/modulo-arp/ pode estar errado.
-# Então tentamos variações até achar a que o Swagger realmente usa.
-ITEM_PATH_CANDIDATES = [
-    "/modulo-arp/2.1_consultarARPItem_Id",
-    "/modulo-arp/2.1_consultarARPItem_Id/",
-    "/modulo-arp/modulo-arp/2.1_consultarARPItem_Id",
-    "/modulo-arp/modulo-arp/2.1_consultarARPItem_Id/",
-    "/modulo_arp/2.1_consultarARPItem_Id",
-    "/modulo_arp/2.1_consultarARPItem_Id/",
-]
+ITEM_PATH = "/modulo-arp/2.1_consultarARPItem_Id"
 
 ARP_ITEM_BATCH_LIMIT = int(os.getenv("ARP_ITEM_BATCH_LIMIT", "300"))
 SLEEP_BETWEEN_CALLS_S = float(os.getenv("ARP_ITEM_SLEEP_S", "0.15"))
@@ -31,6 +22,16 @@ SLEEP_BETWEEN_CALLS_S = float(os.getenv("ARP_ITEM_SLEEP_S", "0.15"))
 def sha256_json(obj) -> str:
     raw = json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def parse_dt(value):
+    if value is None or value == "":
+        return None
+    try:
+        # exemplo: "2025-11-25T09:24:47"
+        return dt.datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 
 def make_session() -> requests.Session:
@@ -86,95 +87,9 @@ def insert_raw(conn, endpoint_name: str, params: dict, payload, payload_sha: str
         )
 
 
-def upsert_item(conn, ug: int, numero_ata: str, numero_controle: str, item: dict) -> int:
-    item_sha = sha256_json(item)
-
-    # Identificadores (vamos refinando depois com base no payload real)
-    item_id = item.get("id") or item.get("idItem") or item.get("idItemAta") or item.get("itemId")
-    numero_item = item.get("numeroItem") or item.get("numero") or item.get("item")
-
-    descricao = item.get("descricao") or item.get("descricaoItem") or item.get("nome")
-    unidade = item.get("unidade") or item.get("unidadeFornecimento") or item.get("unidadeMedida")
-    quantidade = item.get("quantidade") or item.get("qtde")
-    valor_unitario = item.get("valorUnitario") or item.get("precoUnitario")
-    valor_total = item.get("valorTotal") or item.get("precoTotal")
-
-    catmat = item.get("catmat") or item.get("codigoCatmat")
-    catsrv = item.get("catsrv") or item.get("codigoCatsrv")
-
-    # normaliza numero_item se vier string numérica
-    if isinstance(numero_item, str) and numero_item.isdigit():
-        numero_item = int(numero_item)
-    elif not isinstance(numero_item, int):
-        numero_item = None
-
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            insert into arp_item (
-              codigo_unidade_gerenciadora,
-              numero_ata_registro_preco,
-              numero_controle_pncp_ata,
-              item_id,
-              numero_item,
-              descricao,
-              unidade,
-              quantidade,
-              valor_unitario,
-              valor_total,
-              catmat,
-              catsrv,
-              payload_sha256,
-              payload,
-              first_seen_at,
-              last_seen_at
-            )
-            values (
-              %s, %s, %s,
-              %s, %s,
-              %s, %s, %s, %s, %s,
-              %s, %s,
-              %s, %s::jsonb,
-              now(), now()
-            )
-            on conflict (codigo_unidade_gerenciadora, numero_controle_pncp_ata, coalesce(item_id,''), coalesce(numero_item,-1))
-            do update set
-              numero_ata_registro_preco = excluded.numero_ata_registro_preco,
-              descricao = excluded.descricao,
-              unidade = excluded.unidade,
-              quantidade = excluded.quantidade,
-              valor_unitario = excluded.valor_unitario,
-              valor_total = excluded.valor_total,
-              catmat = excluded.catmat,
-              catsrv = excluded.catsrv,
-              payload_sha256 = excluded.payload_sha256,
-              payload = excluded.payload,
-              last_seen_at = now()
-            """,
-            (
-                ug,
-                numero_ata,
-                numero_controle,
-                str(item_id) if item_id is not None else None,
-                numero_item,
-                descricao,
-                unidade,
-                quantidade,
-                valor_unitario,
-                valor_total,
-                catmat,
-                catsrv,
-                item_sha,
-                json.dumps(item, ensure_ascii=False),
-            ),
-        )
-
-    return 1
-
-
 def select_arp_targets(conn, limit: int):
     """
-    Seleciona ARPs com numeroControlePncpAta disponível no payload (conforme schema que você enviou).
+    Puxa ARPs mais recentes que têm numeroControlePncpAta no payload.
     """
     sql = """
     select
@@ -193,87 +108,175 @@ def select_arp_targets(conn, limit: int):
         return cur.fetchall()
 
 
-def extract_items_from_response(data):
-    """
-    Normaliza formatos comuns:
-    - { resultado: [...] }
-    - [...]
-    - { itens: [...] }
-    """
-    if isinstance(data, dict):
-        if isinstance(data.get("resultado"), list):
-            return data["resultado"]
-        if isinstance(data.get("itens"), list):
-            return data["itens"]
-        # fallback: primeira lista encontrada
-        for v in data.values():
-            if isinstance(v, list):
-                return v
+def extract_items(data):
+    if isinstance(data, dict) and isinstance(data.get("resultado"), list):
+        return data["resultado"]
     if isinstance(data, list):
         return data
     return []
 
 
-def fetch_items(session: requests.Session, numero_controle_pncp_ata: str):
+def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
     """
-    Tenta todos os ITEM_PATH_CANDIDATES até achar um que responda != 404.
+    Upsert conforme payload real do Swagger.
+    Chave: (UG, numeroControlePncpAta, numeroItem)
     """
-    params = {"numeroControlePncpAta": numero_controle_pncp_ata}
+    item_sha = sha256_json(item)
 
-    last_non_404 = None
-    for path in ITEM_PATH_CANDIDATES:
-        url = BASE_URL + path
-        r = get_with_retry(session, url, params)
+    numero_ata = item.get("numeroAtaRegistroPreco")
+    numero_item = item.get("numeroItem")  # vem como string "00005"
+    codigo_item = item.get("codigoItem")
+    descricao_item = item.get("descricaoItem")
+    tipo_item = item.get("tipoItem")
 
-        if r.status_code == 404:
-            continue
+    qtd_item = item.get("quantidadeHomologadaItem")
+    qtd_vencedor = item.get("quantidadeHomologadaVencedor")
+    valor_unit = item.get("valorUnitario")
+    valor_total = item.get("valorTotal")
+    maximo_adesao = item.get("maximoAdesao")
 
-        last_non_404 = r
-        r.raise_for_status()
-        return r.json(), path
+    classificacao_fornecedor = item.get("classificacaoFornecedor")
+    ni_fornecedor = item.get("niFornecedor")
+    nome_fornecedor = item.get("nomeRazaoSocialFornecedor")
 
-    raise RuntimeError(
-        f"[ARP_ITEM] Nenhum ITEM_PATH funcionou (404 em todos). "
-        f"base={BASE_URL} tried={ITEM_PATH_CANDIDATES} last_non_404={last_non_404}"
-    )
+    numero_compra = item.get("numeroCompra")
+    ano_compra = item.get("anoCompra")
+    codigo_modalidade = item.get("codigoModalidadeCompra")
+
+    id_compra = item.get("idCompra")
+    numero_controle_compra = item.get("numeroControlePncpCompra")
+
+    data_inclusao = parse_dt(item.get("dataHoraInclusao"))
+    data_atualizacao = parse_dt(item.get("dataHoraAtualizacao"))
+    data_exclusao = parse_dt(item.get("dataHoraExclusao"))
+
+    item_excluido = item.get("itemExcluido")
+
+    codigo_pdm = item.get("codigoPdm")
+    nome_pdm = item.get("nomePdm")
+
+    # Normaliza numero_item para manter chave consistente
+    # (fica string mesmo, porque vem "00005" e isso pode ser relevante)
+    if numero_item is None:
+        numero_item_key = ""
+    else:
+        numero_item_key = str(numero_item)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into arp_item (
+              codigo_unidade_gerenciadora,
+              numero_ata_registro_preco,
+              numero_controle_pncp_ata,
+              item_id,
+              numero_item,
+
+              descricao,
+              unidade,
+              quantidade,
+              valor_unitario,
+              valor_total,
+
+              catmat,
+              catsrv,
+
+              payload_sha256,
+              payload,
+              first_seen_at,
+              last_seen_at
+            )
+            values (
+              %s, %s, %s,
+              %s, %s,
+              %s, %s, %s, %s, %s,
+              %s, %s,
+              %s, %s::jsonb,
+              now(), now()
+            )
+            on conflict (codigo_unidade_gerenciadora, numero_controle_pncp_ata, coalesce(item_id,''), coalesce(numero_item,-1))
+            do update set
+              numero_ata_registro_preco = excluded.numero_ata_registro_preco,
+              descricao = excluded.descricao,
+              quantidade = excluded.quantidade,
+              valor_unitario = excluded.valor_unitario,
+              valor_total = excluded.valor_total,
+              payload_sha256 = excluded.payload_sha256,
+              payload = excluded.payload,
+              last_seen_at = now()
+            """,
+            (
+                ug,
+                numero_ata,
+                numero_controle_ata,
+                str(codigo_item) if codigo_item is not None else None,  # item_id <- codigoItem
+                None,  # numero_item (int) fica null, porque no schema atual é integer
+                # Vamos guardar o numeroItem (string "00005") no payload; depois normalizamos a tabela.
+                descricao_item,
+                None,  # unidade (não veio no exemplo)
+                qtd_vencedor if qtd_vencedor is not None else qtd_item,
+                valor_unit,
+                valor_total,
+                None,
+                None,
+                item_sha,
+                json.dumps(item, ensure_ascii=False),
+            ),
+        )
+
+    # Também atualiza payload (onde está o numeroItem "00005", fornecedor etc.)
+    # Por enquanto, os campos detalhados ficam no payload; na próxima migration
+    # vamos normalizar colunas específicas com base nesse schema.
+    return 1
 
 
 def main():
     print("[ARP_ITEM] START", flush=True)
     print(f"[ARP_ITEM] BASE_URL={BASE_URL}", flush=True)
-    print(f"[ARP_ITEM] PATH_CANDIDATES={ITEM_PATH_CANDIDATES}", flush=True)
+    print(f"[ARP_ITEM] ITEM_PATH={ITEM_PATH}", flush=True)
 
     session = make_session()
+    url = BASE_URL + ITEM_PATH
+
     conn = get_conn()
     conn.autocommit = False
 
     total_calls = 0
-    total_items_upserted = 0
+    total_items = 0
     total_raw = 0
 
     try:
         targets = select_arp_targets(conn, ARP_ITEM_BATCH_LIMIT)
         print(f"[ARP_ITEM] targets={len(targets)} (limit={ARP_ITEM_BATCH_LIMIT})", flush=True)
 
-        for (ug, numero_ata, numero_controle) in targets:
-            data, used_path = fetch_items(session, numero_controle)
+        for (ug, numero_ata, numero_controle_ata) in targets:
+            params = {"numeroControlePncpAta": numero_controle_ata}
 
-            # RAW
-            raw_params = {"numeroControlePncpAta": numero_controle, "_path": used_path}
-            insert_raw(conn, RAW_ENDPOINT_NAME, raw_params, data, sha256_json(data))
+            r = get_with_retry(session, url, params)
+
+            if r.status_code == 404:
+                raise RuntimeError(
+                    "404 no endpoint de itens. Confirme se o Request URL do Swagger bate com o ITEM_PATH. "
+                    f"url={r.url}"
+                )
+
+            r.raise_for_status()
+            data = r.json()
+
+            insert_raw(conn, RAW_ENDPOINT_NAME, params, data, sha256_json(data))
             total_raw += 1
 
-            items = extract_items_from_response(data)
-            print(f"[ARP_ITEM] controle={numero_controle} used_path={used_path} items={len(items)}", flush=True)
+            items = extract_items(data)
+            print(f"[ARP_ITEM] controle={numero_controle_ata} items={len(items)}", flush=True)
 
             for item in items:
-                total_items_upserted += upsert_item(conn, ug, numero_ata, numero_controle, item)
+                total_items += upsert_item(conn, ug, numero_ata, numero_controle_ata, item)
 
             conn.commit()
             total_calls += 1
             time.sleep(SLEEP_BETWEEN_CALLS_S)
 
-        # Estado simples
+        # Salva estado simples
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -289,7 +292,7 @@ def main():
                             "ended_at": dt.datetime.utcnow().isoformat(),
                             "calls": total_calls,
                             "raw_pages": total_raw,
-                            "upserts": total_items_upserted,
+                            "upserts": total_items,
                             "batch_limit": ARP_ITEM_BATCH_LIMIT,
                         },
                         ensure_ascii=False,
@@ -298,12 +301,11 @@ def main():
             )
         conn.commit()
 
-        print(f"[ARP_ITEM] DONE calls={total_calls} raw={total_raw} upserts={total_items_upserted}", flush=True)
+        print(f"[ARP_ITEM] DONE calls={total_calls} raw={total_raw} upserts={total_items}", flush=True)
 
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
-    import datetime as dt
     main()
