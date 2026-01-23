@@ -28,7 +28,6 @@ def parse_dt(value):
     if value is None or value == "":
         return None
     try:
-        # aceita "2025-11-25T09:24:47"
         return dt.datetime.fromisoformat(value)
     except Exception:
         return None
@@ -116,18 +115,15 @@ def extract_items(data):
 def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
     item_sha = sha256_json(item)
 
-    # Campos do payload real
     numero_ata = item.get("numeroAtaRegistroPreco")
-    codigo_ug = item.get("codigoUnidadeGerenciadora")
 
-    numero_item_str = item.get("numeroItem")  # "00005"
+    numero_item_str = item.get("numeroItem")  # ex: "00005"
     codigo_item = item.get("codigoItem")
     descricao_item = item.get("descricaoItem")
     tipo_item = item.get("tipoItem")
 
     qtd_item = item.get("quantidadeHomologadaItem")
     qtd_vencedor = item.get("quantidadeHomologadaVencedor")
-
     valor_unit = item.get("valorUnitario")
     valor_total = item.get("valorTotal")
     maximo_adesao = item.get("maximoAdesao")
@@ -152,9 +148,10 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
     data_hora_exclusao = parse_dt(item.get("dataHoraExclusao"))
     item_excluido = item.get("itemExcluido")
 
-    # Para o schema atual (003) a chave do upsert usa item_id(text) e numero_item(int).
-    # Vamos usar item_id = codigoItem (string) e manter numero_item = NULL.
-    item_id = str(codigo_item) if codigo_item is not None else None
+    quantidade = qtd_vencedor if qtd_vencedor is not None else qtd_item
+
+    # Evita null na chave (index usa coalesce para '')
+    numero_item_str = "" if numero_item_str is None else str(numero_item_str)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -163,36 +160,33 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
               codigo_unidade_gerenciadora,
               numero_ata_registro_preco,
               numero_controle_pncp_ata,
-              item_id,
-              numero_item,
 
+              -- chave nova
+              numero_item_str,
+
+              -- outros campos
+              codigo_item,
+              tipo_item,
               descricao,
-              unidade,
               quantidade,
               valor_unitario,
               valor_total,
-
-              catmat,
-              catsrv,
-
-              -- colunas normalizadas (004)
-              numero_item_str,
-              codigo_item,
-              tipo_item,
-              quantidade_homologada_item,
-              quantidade_homologada_vencedor,
               maximo_adesao,
+
               classificacao_fornecedor,
               ni_fornecedor,
               nome_fornecedor,
               situacao_sicaf,
+
               codigo_pdm,
               nome_pdm,
+
               numero_compra,
               ano_compra,
               codigo_modalidade_compra,
               id_compra,
               numero_controle_pncp_compra,
+
               data_hora_inclusao,
               data_hora_atualizacao,
               data_hora_exclusao,
@@ -205,49 +199,41 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
             )
             values (
               %s, %s, %s,
-              %s, %s,
-
-              %s, %s, %s, %s, %s,
-              %s, %s,
-
-              %s, %s, %s,
-              %s, %s, %s,
+              %s,
+              %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s,
               %s, %s,
-              %s, %s, %s,
-              %s, %s,
-              %s, %s, %s,
-              %s,
-
+              %s, %s, %s, %s, %s,
+              %s, %s, %s, %s,
               %s, %s::jsonb,
               now(), now()
             )
-            on conflict (codigo_unidade_gerenciadora, numero_controle_pncp_ata, coalesce(item_id,''), coalesce(numero_item,-1))
+            on conflict (codigo_unidade_gerenciadora, numero_controle_pncp_ata, numero_item_str)
             do update set
               numero_ata_registro_preco = excluded.numero_ata_registro_preco,
 
+              codigo_item = excluded.codigo_item,
+              tipo_item = excluded.tipo_item,
               descricao = excluded.descricao,
               quantidade = excluded.quantidade,
               valor_unitario = excluded.valor_unitario,
               valor_total = excluded.valor_total,
-
-              numero_item_str = excluded.numero_item_str,
-              codigo_item = excluded.codigo_item,
-              tipo_item = excluded.tipo_item,
-              quantidade_homologada_item = excluded.quantidade_homologada_item,
-              quantidade_homologada_vencedor = excluded.quantidade_homologada_vencedor,
               maximo_adesao = excluded.maximo_adesao,
+
               classificacao_fornecedor = excluded.classificacao_fornecedor,
               ni_fornecedor = excluded.ni_fornecedor,
               nome_fornecedor = excluded.nome_fornecedor,
               situacao_sicaf = excluded.situacao_sicaf,
+
               codigo_pdm = excluded.codigo_pdm,
               nome_pdm = excluded.nome_pdm,
+
               numero_compra = excluded.numero_compra,
               ano_compra = excluded.ano_compra,
               codigo_modalidade_compra = excluded.codigo_modalidade_compra,
               id_compra = excluded.id_compra,
               numero_controle_pncp_compra = excluded.numero_controle_pncp_compra,
+
               data_hora_inclusao = excluded.data_hora_inclusao,
               data_hora_atualizacao = excluded.data_hora_atualizacao,
               data_hora_exclusao = excluded.data_hora_exclusao,
@@ -261,22 +247,13 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
                 ug,
                 numero_ata,
                 numero_controle_ata,
-                item_id,
-                None,  # numero_item int não usado
-
+                numero_item_str,
+                codigo_item,
+                tipo_item,
                 descricao_item,
-                None,
-                qtd_vencedor if qtd_vencedor is not None else qtd_item,
+                quantidade,
                 valor_unit,
                 valor_total,
-                None,
-                None,
-
-                numero_item_str,
-                int(codigo_item) if isinstance(codigo_item, int) else codigo_item,
-                tipo_item,
-                qtd_item,
-                qtd_vencedor,
                 maximo_adesao,
                 classificacao_fornecedor,
                 ni_fornecedor,
@@ -293,7 +270,6 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
                 data_hora_atualizacao,
                 data_hora_exclusao,
                 item_excluido,
-
                 item_sha,
                 json.dumps(item, ensure_ascii=False),
             ),
@@ -321,7 +297,7 @@ def main():
         targets = select_arp_targets(conn, ARP_ITEM_BATCH_LIMIT)
         print(f"[ARP_ITEM] targets={len(targets)} (limit={ARP_ITEM_BATCH_LIMIT})", flush=True)
 
-        for (ug, numero_ata, numero_controle_ata) in targets:
+        for (ug, _numero_ata, numero_controle_ata) in targets:
             params = {"numeroControlePncpAta": numero_controle_ata}
 
             r = get_with_retry(session, url, params)
