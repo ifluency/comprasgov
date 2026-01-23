@@ -27,5 +27,5 @@ delete from arp_item
 where id in (select id from ranked where rn > 1);
 
 -- ✅ UNIQUE INDEX direto (sem expressão) -> compatível com ON CONFLICT (colunas)
-create unique index if not exists uq_arp_item_ug_controle_numitem
+create unique index if not exists uq_arp_item_ug_controle_numitem_v2
   on arp_item (codigo_unidade_gerenciadora, numero_controle_pncp_ata, numero_item_str);
