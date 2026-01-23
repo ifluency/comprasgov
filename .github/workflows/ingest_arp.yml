@@ -13,7 +13,7 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -51,8 +51,8 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COMPRAS_UG: "155125"
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
-          ARP_ITEM_BATCH_LIMIT: "300"
-          ARP_ITEM_SLEEP_S: "0.15"
-          ARP_ITEM_DEFAULT_DATA_ATUALIZACAO: "2024-01-01"
+          ARP_ITEM_BATCH_LIMIT: "1500"
+          ARP_ITEM_SLEEP_S: "0.10"
+          ARP_ITEM_ARP_LOOKBACK_DAYS: "0"
         run: |
           python -u src/ingest_arp_item.py
