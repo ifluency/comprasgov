@@ -2,6 +2,11 @@ name: Ingest ARP (ComprasGOV)
 
 on:
   workflow_dispatch:
+    inputs:
+      force_full:
+        description: "Forçar FULL refresh? (true/false)"
+        required: false
+        default: "false"
   schedule:
     - cron: "30 6 * * *" # 06:30 UTC ~ 03:30 São Paulo
 
@@ -37,5 +42,6 @@ jobs:
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
           COMPRAS_PAGE_SIZE: "500"
           COMPRAS_MAX_WINDOW_DAYS: "365"
+          FORCE_FULL: ${{ github.event.inputs.force_full || 'false' }}
         run: |
           python -u src/ingest_arp.py
