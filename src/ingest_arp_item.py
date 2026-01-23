@@ -28,7 +28,6 @@ def parse_dt(value):
     if value is None or value == "":
         return None
     try:
-        # exemplo: "2025-11-25T09:24:47"
         return dt.datetime.fromisoformat(value)
     except Exception:
         return None
@@ -119,48 +118,24 @@ def extract_items(data):
 def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
     """
     Upsert conforme payload real do Swagger.
-    Chave: (UG, numeroControlePncpAta, numeroItem)
+
+    OBS: Por enquanto, mantemos colunas normalizadas mínimas e guardamos o JSON inteiro no payload.
     """
     item_sha = sha256_json(item)
 
     numero_ata = item.get("numeroAtaRegistroPreco")
-    numero_item = item.get("numeroItem")  # vem como string "00005"
-    codigo_item = item.get("codigoItem")
+
+    # Chaves relevantes no payload real
+    codigo_item = item.get("codigoItem")  # usamos como item_id
     descricao_item = item.get("descricaoItem")
-    tipo_item = item.get("tipoItem")
 
     qtd_item = item.get("quantidadeHomologadaItem")
     qtd_vencedor = item.get("quantidadeHomologadaVencedor")
     valor_unit = item.get("valorUnitario")
     valor_total = item.get("valorTotal")
-    maximo_adesao = item.get("maximoAdesao")
 
-    classificacao_fornecedor = item.get("classificacaoFornecedor")
-    ni_fornecedor = item.get("niFornecedor")
-    nome_fornecedor = item.get("nomeRazaoSocialFornecedor")
-
-    numero_compra = item.get("numeroCompra")
-    ano_compra = item.get("anoCompra")
-    codigo_modalidade = item.get("codigoModalidadeCompra")
-
-    id_compra = item.get("idCompra")
-    numero_controle_compra = item.get("numeroControlePncpCompra")
-
-    data_inclusao = parse_dt(item.get("dataHoraInclusao"))
-    data_atualizacao = parse_dt(item.get("dataHoraAtualizacao"))
-    data_exclusao = parse_dt(item.get("dataHoraExclusao"))
-
-    item_excluido = item.get("itemExcluido")
-
-    codigo_pdm = item.get("codigoPdm")
-    nome_pdm = item.get("nomePdm")
-
-    # Normaliza numero_item para manter chave consistente
-    # (fica string mesmo, porque vem "00005" e isso pode ser relevante)
-    if numero_item is None:
-        numero_item_key = ""
-    else:
-        numero_item_key = str(numero_item)
+    # Escolhe a quantidade mais útil (vencedor se existir)
+    quantidade = qtd_vencedor if qtd_vencedor is not None else qtd_item
 
     with conn.cursor() as cur:
         cur.execute(
@@ -210,11 +185,10 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
                 numero_ata,
                 numero_controle_ata,
                 str(codigo_item) if codigo_item is not None else None,  # item_id <- codigoItem
-                None,  # numero_item (int) fica null, porque no schema atual é integer
-                # Vamos guardar o numeroItem (string "00005") no payload; depois normalizamos a tabela.
+                None,  # numero_item (int) ainda não usamos; numeroItem string fica no payload
                 descricao_item,
-                None,  # unidade (não veio no exemplo)
-                qtd_vencedor if qtd_vencedor is not None else qtd_item,
+                None,  # unidade não veio no exemplo
+                quantidade,
                 valor_unit,
                 valor_total,
                 None,
@@ -224,9 +198,6 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
             ),
         )
 
-    # Também atualiza payload (onde está o numeroItem "00005", fornecedor etc.)
-    # Por enquanto, os campos detalhados ficam no payload; na próxima migration
-    # vamos normalizar colunas específicas com base nesse schema.
     return 1
 
 
@@ -253,7 +224,6 @@ def main():
             params = {"numeroControlePncpAta": numero_controle_ata}
 
             r = get_with_retry(session, url, params)
-
             if r.status_code == 404:
                 raise RuntimeError(
                     "404 no endpoint de itens. Confirme se o Request URL do Swagger bate com o ITEM_PATH. "
@@ -270,7 +240,8 @@ def main():
             print(f"[ARP_ITEM] controle={numero_controle_ata} items={len(items)}", flush=True)
 
             for item in items:
-                total_items += upsert_item(conn, ug, numero_ata, numero_controle_ata, item)
+                # ✅ chamada corrigida (4 args)
+                total_items += upsert_item(conn, ug, numero_controle_ata, item)
 
             conn.commit()
             total_calls += 1
