@@ -3,8 +3,7 @@ name: Ingest ARP (ComprasGOV)
 on:
   workflow_dispatch:
   schedule:
-    # 06:30 UTC ~ 03:30 São Paulo (UTC-3)
-    - cron: "30 6 * * *"
+    - cron: "30 6 * * *" # 06:30 UTC ~ 03:30 São Paulo
 
 jobs:
   ingest:
@@ -37,6 +36,6 @@ jobs:
           COMPRAS_UG: "155125"
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
           COMPRAS_PAGE_SIZE: "500"
-          DAILY_LOOKBACK_DAYS: "45"
+          COMPRAS_MAX_WINDOW_DAYS: "365"
         run: |
           python -u src/ingest_arp.py
