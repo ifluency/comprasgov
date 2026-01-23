@@ -2,7 +2,6 @@ import os
 import json
 import time
 import hashlib
-import datetime as dt
 import requests
 
 from db import get_conn
@@ -13,14 +12,20 @@ UG = int(os.getenv("COMPRAS_UG", "155125"))
 TIMEOUT = int(os.getenv("COMPRAS_TIMEOUT", "60"))
 
 BASE_URL = os.getenv("COMPRAS_BASE_URL", "https://dadosabertos.compras.gov.br").strip().rstrip("/")
-ITEM_PATH = "/modulo-arp/modulo-arp/2.1_consultarARPItem_Id"
 
-# Quantas ARPs processar por execução (pra controlar custo)
-ARP_ITEM_BATCH_LIMIT = int(os.getenv("ARP_ITEM_BATCH_LIMIT", "500"))
+# ✅ O seu 404 indica que o PATH com /modulo-arp/modulo-arp/ pode estar errado.
+# Então tentamos variações até achar a que o Swagger realmente usa.
+ITEM_PATH_CANDIDATES = [
+    "/modulo-arp/2.1_consultarARPItem_Id",
+    "/modulo-arp/2.1_consultarARPItem_Id/",
+    "/modulo-arp/modulo-arp/2.1_consultarARPItem_Id",
+    "/modulo-arp/modulo-arp/2.1_consultarARPItem_Id/",
+    "/modulo_arp/2.1_consultarARPItem_Id",
+    "/modulo_arp/2.1_consultarARPItem_Id/",
+]
+
+ARP_ITEM_BATCH_LIMIT = int(os.getenv("ARP_ITEM_BATCH_LIMIT", "300"))
 SLEEP_BETWEEN_CALLS_S = float(os.getenv("ARP_ITEM_SLEEP_S", "0.15"))
-
-# dataAtualizacao (se a API aceitar como filtro incremental)
-DEFAULT_DATA_ATUALIZACAO = os.getenv("ARP_ITEM_DEFAULT_DATA_ATUALIZACAO", "2024-01-01")
 
 
 def sha256_json(obj) -> str:
@@ -65,26 +70,6 @@ def get_with_retry(session: requests.Session, url: str, params: dict):
     return r
 
 
-def get_state(conn, name: str):
-    with conn.cursor() as cur:
-        cur.execute("select value from etl_state where name = %s", (name,))
-        row = cur.fetchone()
-        return row[0] if row else None
-
-
-def set_state(conn, name: str, value: dict):
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            insert into etl_state (name, value, updated_at)
-            values (%s, %s::jsonb, now())
-            on conflict (name)
-            do update set value=excluded.value, updated_at=now()
-            """,
-            (name, json.dumps(value, ensure_ascii=False)),
-        )
-
-
 def insert_raw(conn, endpoint_name: str, params: dict, payload, payload_sha: str):
     with conn.cursor() as cur:
         cur.execute(
@@ -104,18 +89,24 @@ def insert_raw(conn, endpoint_name: str, params: dict, payload, payload_sha: str
 def upsert_item(conn, ug: int, numero_ata: str, numero_controle: str, item: dict) -> int:
     item_sha = sha256_json(item)
 
-    # Heurísticas para identificar campos comuns (ajustamos depois com base no payload real)
-    item_id = item.get("id") or item.get("itemId") or item.get("idItem") or item.get("idItemAta") or item.get("idItemARP")
-    numero_item = item.get("numeroItem") or item.get("numero") or item.get("item") or item.get("nItem")
+    # Identificadores (vamos refinando depois com base no payload real)
+    item_id = item.get("id") or item.get("idItem") or item.get("idItemAta") or item.get("itemId")
+    numero_item = item.get("numeroItem") or item.get("numero") or item.get("item")
 
-    descricao = item.get("descricao") or item.get("descricaoItem") or item.get("nome") or item.get("descricaoDetalhada")
+    descricao = item.get("descricao") or item.get("descricaoItem") or item.get("nome")
     unidade = item.get("unidade") or item.get("unidadeFornecimento") or item.get("unidadeMedida")
-    quantidade = item.get("quantidade") or item.get("qtde") or item.get("quantidadeTotal")
-    valor_unitario = item.get("valorUnitario") or item.get("precoUnitario") or item.get("valorUnit")
-    valor_total = item.get("valorTotal") or item.get("precoTotal") or item.get("valor")
+    quantidade = item.get("quantidade") or item.get("qtde")
+    valor_unitario = item.get("valorUnitario") or item.get("precoUnitario")
+    valor_total = item.get("valorTotal") or item.get("precoTotal")
 
-    catmat = item.get("catmat") or item.get("codigoCatmat") or item.get("codigoCATMAT")
-    catsrv = item.get("catsrv") or item.get("codigoCatsrv") or item.get("codigoCATSRV")
+    catmat = item.get("catmat") or item.get("codigoCatmat")
+    catsrv = item.get("catsrv") or item.get("codigoCatsrv")
+
+    # normaliza numero_item se vier string numérica
+    if isinstance(numero_item, str) and numero_item.isdigit():
+        numero_item = int(numero_item)
+    elif not isinstance(numero_item, int):
+        numero_item = None
 
     with conn.cursor() as cur:
         cur.execute(
@@ -165,7 +156,7 @@ def upsert_item(conn, ug: int, numero_ata: str, numero_controle: str, item: dict
                 numero_ata,
                 numero_controle,
                 str(item_id) if item_id is not None else None,
-                int(numero_item) if isinstance(numero_item, int) or (isinstance(numero_item, str) and numero_item.isdigit()) else None,
+                numero_item,
                 descricao,
                 unidade,
                 quantidade,
@@ -183,8 +174,7 @@ def upsert_item(conn, ug: int, numero_ata: str, numero_controle: str, item: dict
 
 def select_arp_targets(conn, limit: int):
     """
-    Seleciona ARPs para puxar itens.
-    Usa numeroControlePncpAta do payload, pra não depender da coluna existir.
+    Seleciona ARPs com numeroControlePncpAta disponível no payload (conforme schema que você enviou).
     """
     sql = """
     select
@@ -205,7 +195,7 @@ def select_arp_targets(conn, limit: int):
 
 def extract_items_from_response(data):
     """
-    Normaliza possíveis formatos:
+    Normaliza formatos comuns:
     - { resultado: [...] }
     - [...]
     - { itens: [...] }
@@ -215,7 +205,7 @@ def extract_items_from_response(data):
             return data["resultado"]
         if isinstance(data.get("itens"), list):
             return data["itens"]
-        # fallback: se vier dict com chave única list
+        # fallback: primeira lista encontrada
         for v in data.values():
             if isinstance(v, list):
                 return v
@@ -224,13 +214,36 @@ def extract_items_from_response(data):
     return []
 
 
+def fetch_items(session: requests.Session, numero_controle_pncp_ata: str):
+    """
+    Tenta todos os ITEM_PATH_CANDIDATES até achar um que responda != 404.
+    """
+    params = {"numeroControlePncpAta": numero_controle_pncp_ata}
+
+    last_non_404 = None
+    for path in ITEM_PATH_CANDIDATES:
+        url = BASE_URL + path
+        r = get_with_retry(session, url, params)
+
+        if r.status_code == 404:
+            continue
+
+        last_non_404 = r
+        r.raise_for_status()
+        return r.json(), path
+
+    raise RuntimeError(
+        f"[ARP_ITEM] Nenhum ITEM_PATH funcionou (404 em todos). "
+        f"base={BASE_URL} tried={ITEM_PATH_CANDIDATES} last_non_404={last_non_404}"
+    )
+
+
 def main():
     print("[ARP_ITEM] START", flush=True)
     print(f"[ARP_ITEM] BASE_URL={BASE_URL}", flush=True)
+    print(f"[ARP_ITEM] PATH_CANDIDATES={ITEM_PATH_CANDIDATES}", flush=True)
 
     session = make_session()
-    url = BASE_URL + ITEM_PATH
-
     conn = get_conn()
     conn.autocommit = False
 
@@ -239,30 +252,19 @@ def main():
     total_raw = 0
 
     try:
-        state = get_state(conn, "arp_item_last_run") or {}
-        last_data_atualizacao = state.get("dataAtualizacao") or DEFAULT_DATA_ATUALIZACAO
-
-        print(f"[ARP_ITEM] dataAtualizacao (filtro) = {last_data_atualizacao}", flush=True)
-
         targets = select_arp_targets(conn, ARP_ITEM_BATCH_LIMIT)
         print(f"[ARP_ITEM] targets={len(targets)} (limit={ARP_ITEM_BATCH_LIMIT})", flush=True)
 
         for (ug, numero_ata, numero_controle) in targets:
-            params = {
-                "numeroControlePncpAta": numero_controle,
-                # se a API aceitar, filtra incremental:
-                "dataAtualizacao": last_data_atualizacao,
-            }
+            data, used_path = fetch_items(session, numero_controle)
 
-            r = get_with_retry(session, url, params)
-            r.raise_for_status()
-            data = r.json()
-
-            insert_raw(conn, RAW_ENDPOINT_NAME, params, data, sha256_json(data))
+            # RAW
+            raw_params = {"numeroControlePncpAta": numero_controle, "_path": used_path}
+            insert_raw(conn, RAW_ENDPOINT_NAME, raw_params, data, sha256_json(data))
             total_raw += 1
 
             items = extract_items_from_response(data)
-            print(f"[ARP_ITEM] controle={numero_controle} items={len(items)}", flush=True)
+            print(f"[ARP_ITEM] controle={numero_controle} used_path={used_path} items={len(items)}", flush=True)
 
             for item in items:
                 total_items_upserted += upsert_item(conn, ug, numero_ata, numero_controle, item)
@@ -271,20 +273,29 @@ def main():
             total_calls += 1
             time.sleep(SLEEP_BETWEEN_CALLS_S)
 
-        # Atualiza estado: próximo incremental usa "agora" como dataAtualizacao
-        now_str = dt.date.today().isoformat()
-        set_state(
-            conn,
-            "arp_item_last_run",
-            {
-                "ended_at": dt.datetime.utcnow().isoformat(),
-                "dataAtualizacao": now_str,
-                "calls": total_calls,
-                "raw_pages": total_raw,
-                "upserts": total_items_upserted,
-                "batch_limit": ARP_ITEM_BATCH_LIMIT,
-            },
-        )
+        # Estado simples
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into etl_state (name, value, updated_at)
+                values (%s, %s::jsonb, now())
+                on conflict (name)
+                do update set value=excluded.value, updated_at=now()
+                """,
+                (
+                    "arp_item_last_run",
+                    json.dumps(
+                        {
+                            "ended_at": dt.datetime.utcnow().isoformat(),
+                            "calls": total_calls,
+                            "raw_pages": total_raw,
+                            "upserts": total_items_upserted,
+                            "batch_limit": ARP_ITEM_BATCH_LIMIT,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
         conn.commit()
 
         print(f"[ARP_ITEM] DONE calls={total_calls} raw={total_raw} upserts={total_items_upserted}", flush=True)
@@ -294,4 +305,5 @@ def main():
 
 
 if __name__ == "__main__":
+    import datetime as dt
     main()
