@@ -1,12 +1,7 @@
-name: Ingest ARP (ComprasGOV)
+name: Ingest Licitacao (modulo-legado)
 
 on:
   workflow_dispatch:
-    inputs:
-      force_full:
-        description: "Forçar FULL refresh ARP? (true/false)"
-        required: false
-        default: "false"
   schedule:
     - cron: "30 6 * * *" # 06:30 UTC ~ 03:30 São Paulo
 
@@ -35,24 +30,14 @@ jobs:
         run: |
           python -u src/migrate.py
 
-      - name: Ingest ARP
+      - name: Ingest Licitacao (modulo-legado)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          COMPRAS_UG: "155125"
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
+          COMPRAS_UASG: "155125"
           COMPRAS_PAGE_SIZE: "500"
+          COMPRAS_START_DATE: "2024-01-01"
           COMPRAS_MAX_WINDOW_DAYS: "365"
-          FORCE_FULL: ${{ github.event.inputs.force_full || 'false' }}
+          COMPRAS_SLEEP_S: "0.10"
         run: |
-          python -u src/ingest_arp.py
-
-      - name: Ingest ARP Items
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          COMPRAS_UG: "155125"
-          COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
-          ARP_ITEM_BATCH_LIMIT: "1500"
-          ARP_ITEM_SLEEP_S: "0.10"
-          ARP_ITEM_ARP_LOOKBACK_DAYS: "0"
-        run: |
-          python -u src/ingest_arp_item.py
+          python -u src/ingest_licitacao_legado.py
