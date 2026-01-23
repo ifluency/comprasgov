@@ -15,8 +15,11 @@ TIMEOUT = int(os.getenv("COMPRAS_TIMEOUT", "60"))
 BASE_URL = os.getenv("COMPRAS_BASE_URL", "https://dadosabertos.compras.gov.br").strip().rstrip("/")
 ITEM_PATH = "/modulo-arp/2.1_consultarARPItem_Id"
 
-ARP_ITEM_BATCH_LIMIT = int(os.getenv("ARP_ITEM_BATCH_LIMIT", "300"))
+ARP_ITEM_BATCH_LIMIT = int(os.getenv("ARP_ITEM_BATCH_LIMIT", "1000"))
 SLEEP_BETWEEN_CALLS_S = float(os.getenv("ARP_ITEM_SLEEP_S", "0.15"))
+
+# Se quiser, você pode limitar a recaptura para ARPs vistas nos últimos X dias
+ARP_ITEM_ARP_LOOKBACK_DAYS = int(os.getenv("ARP_ITEM_ARP_LOOKBACK_DAYS", "0"))  # 0 = sem filtro
 
 
 def sha256_json(obj) -> str:
@@ -86,30 +89,84 @@ def insert_raw(conn, endpoint_name: str, params: dict, payload, payload_sha: str
         )
 
 
-def select_arp_targets(conn, limit: int):
-    sql = """
-    select
-      codigo_unidade_gerenciadora,
-      coalesce(numero_ata_registro_preco, payload->>'numeroAtaRegistroPreco') as numero_ata_registro_preco,
-      payload->>'numeroControlePncpAta' as numero_controle_pncp_ata
-    from arp
-    where codigo_unidade_gerenciadora = %s
-      and (payload->>'numeroControlePncpAta') is not null
-      and (payload->>'numeroControlePncpAta') <> ''
-    order by last_seen_at desc
-    limit %s;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (UG, limit))
-        return cur.fetchall()
-
-
 def extract_items(data):
     if isinstance(data, dict) and isinstance(data.get("resultado"), list):
         return data["resultado"]
     if isinstance(data, list):
         return data
     return []
+
+
+def select_arp_targets_pending(conn, limit: int):
+    """
+    Prioriza:
+    1) ARPs que ainda NÃO têm nenhum item carregado
+    2) ARPs cuja last_seen_at (arp) é mais recente que o last_seen_at dos itens daquele controle
+
+    Isso evita reprocessar sempre as mesmas.
+    """
+    lookback_clause = ""
+    params = [UG]
+
+    if ARP_ITEM_ARP_LOOKBACK_DAYS and ARP_ITEM_ARP_LOOKBACK_DAYS > 0:
+        lookback_clause = "and a.last_seen_at >= now() - (%s || ' days')::interval"
+        params.append(str(ARP_ITEM_ARP_LOOKBACK_DAYS))
+
+    params.append(limit)
+
+    sql = f"""
+    with arps as (
+      select
+        a.codigo_unidade_gerenciadora,
+        a.last_seen_at as arp_last_seen,
+        coalesce(a.numero_ata_registro_preco, a.payload->>'numeroAtaRegistroPreco') as numero_ata_registro_preco,
+        a.payload->>'numeroControlePncpAta' as numero_controle_pncp_ata
+      from arp a
+      where a.codigo_unidade_gerenciadora = %s
+        and (a.payload->>'numeroControlePncpAta') is not null
+        and (a.payload->>'numeroControlePncpAta') <> ''
+        {lookback_clause}
+    ),
+    items_agg as (
+      select
+        numero_controle_pncp_ata,
+        max(last_seen_at) as items_last_seen,
+        count(*) as itens
+      from arp_item
+      where codigo_unidade_gerenciadora = %s
+      group by 1
+    )
+    select
+      arps.codigo_unidade_gerenciadora,
+      arps.numero_ata_registro_preco,
+      arps.numero_controle_pncp_ata
+    from arps
+    left join items_agg ia
+      on ia.numero_controle_pncp_ata = arps.numero_controle_pncp_ata
+    where ia.numero_controle_pncp_ata is null
+       or ia.items_last_seen is null
+       or arps.arp_last_seen > ia.items_last_seen
+    order by
+      (ia.numero_controle_pncp_ata is null) desc,
+      arps.arp_last_seen desc
+    limit %s;
+    """
+
+    # params: UG, [lookback], limit
+    # mas items_agg também precisa UG
+    # então duplicamos UG no meio
+    # Se lookback ativo: params = [UG, days, limit] -> inserir UG antes do limit
+    # Se lookback não: params = [UG, limit] -> inserir UG antes do limit
+    if ARP_ITEM_ARP_LOOKBACK_DAYS and ARP_ITEM_ARP_LOOKBACK_DAYS > 0:
+        # [UG, days, limit] -> [UG, days, UG, limit]
+        final_params = [params[0], params[1], params[0], params[2]]
+    else:
+        # [UG, limit] -> [UG, UG, limit]
+        final_params = [params[0], params[0], params[1]]
+
+    with conn.cursor() as cur:
+        cur.execute(sql, final_params)
+        return cur.fetchall()
 
 
 def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
@@ -150,7 +207,7 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
 
     quantidade = qtd_vencedor if qtd_vencedor is not None else qtd_item
 
-    # Evita null na chave (index usa coalesce para '')
+    # chave nova não aceita NULL
     numero_item_str = "" if numero_item_str is None else str(numero_item_str)
 
     with conn.cursor() as cur:
@@ -160,11 +217,8 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
               codigo_unidade_gerenciadora,
               numero_ata_registro_preco,
               numero_controle_pncp_ata,
-
-              -- chave nova
               numero_item_str,
 
-              -- outros campos
               codigo_item,
               tipo_item,
               descricao,
@@ -198,8 +252,7 @@ def upsert_item(conn, ug: int, numero_controle_ata: str, item: dict) -> int:
               last_seen_at
             )
             values (
-              %s, %s, %s,
-              %s,
+              %s, %s, %s, %s,
               %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s,
               %s, %s,
@@ -282,6 +335,7 @@ def main():
     print("[ARP_ITEM] START", flush=True)
     print(f"[ARP_ITEM] BASE_URL={BASE_URL}", flush=True)
     print(f"[ARP_ITEM] ITEM_PATH={ITEM_PATH}", flush=True)
+    print(f"[ARP_ITEM] BATCH_LIMIT={ARP_ITEM_BATCH_LIMIT} LOOKBACK_DAYS={ARP_ITEM_ARP_LOOKBACK_DAYS}", flush=True)
 
     session = make_session()
     url = BASE_URL + ITEM_PATH
@@ -294,19 +348,13 @@ def main():
     total_raw = 0
 
     try:
-        targets = select_arp_targets(conn, ARP_ITEM_BATCH_LIMIT)
-        print(f"[ARP_ITEM] targets={len(targets)} (limit={ARP_ITEM_BATCH_LIMIT})", flush=True)
+        targets = select_arp_targets_pending(conn, ARP_ITEM_BATCH_LIMIT)
+        print(f"[ARP_ITEM] targets={len(targets)} (pending/updated)", flush=True)
 
         for (ug, _numero_ata, numero_controle_ata) in targets:
             params = {"numeroControlePncpAta": numero_controle_ata}
 
             r = get_with_retry(session, url, params)
-            if r.status_code == 404:
-                raise RuntimeError(
-                    "404 no endpoint de itens. Confirme se o Request URL do Swagger bate com o ITEM_PATH. "
-                    f"url={r.url}"
-                )
-
             r.raise_for_status()
             data = r.json()
 
@@ -340,6 +388,8 @@ def main():
                             "raw_pages": total_raw,
                             "upserts": total_items,
                             "batch_limit": ARP_ITEM_BATCH_LIMIT,
+                            "mode": "pending_or_updated",
+                            "lookback_days": ARP_ITEM_ARP_LOOKBACK_DAYS,
                         },
                         ensure_ascii=False,
                     ),
