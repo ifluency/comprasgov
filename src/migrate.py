@@ -1,16 +1,26 @@
 from pathlib import Path
 from db import get_conn
 
+
 def main():
-    sql = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+    migrations_dir = Path("migrations")
+    files = sorted(migrations_dir.glob("*.sql"))
+
+    if not files:
+        raise RuntimeError("Nenhuma migration .sql encontrada em /migrations")
+
     conn = get_conn()
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
-        print("Migration aplicada com sucesso.")
+            for f in files:
+                sql = f.read_text(encoding="utf-8")
+                cur.execute(sql)
+                print(f"[MIGRATE] OK {f.name}")
+        print("[MIGRATE] Todas as migrations aplicadas com sucesso.")
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     main()
