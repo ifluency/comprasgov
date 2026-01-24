@@ -1,4 +1,4 @@
-name: Ingest Contratacoes PNCP 14.133
+name: Ingest Contratacoes PNCP 14.133 (modalidades 5,6,7)
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
           COMPRAS_UNIDADE: "155125"
-          COMPRAS_CODIGO_MODALIDADE: "5"
+          COMPRAS_MODALIDADES: "5,6,7"
           COMPRAS_PAGE_SIZE: "500"
           COMPRAS_START_DATE: "2024-01-01"
           COMPRAS_MAX_WINDOW_DAYS: "365"
