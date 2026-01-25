@@ -37,8 +37,17 @@ jobs:
           COMPRAS_UNIDADE: "155125"
           COMPRAS_MODALIDADES: "5,6,7"
           COMPRAS_PAGE_SIZE: "500"
-          COMPRAS_START_DATE: "2024-01-01"
+          COMPRAS_START_DATE: "2021-01-01"
           COMPRAS_MAX_WINDOW_DAYS: "365"
           COMPRAS_SLEEP_S: "0.10"
         run: |
           python -u src/ingest_contratacoes_pncp_14133.py
+
+
+      - name: Ingest Itens das Contratacoes (por id_compra)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
+          COMPRAS_SLEEP_S: "0.10"
+        run: |
+          python -u src/ingest_itens_contratacoes_pncp_14133.py
