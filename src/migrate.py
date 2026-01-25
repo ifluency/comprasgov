@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import List
 
 from db import get_conn
 
@@ -8,55 +10,59 @@ from db import get_conn
 MIGRATIONS_DIR = Path("migrations")
 
 
-SCHEMA_MIGRATIONS_DDL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  filename TEXT PRIMARY KEY,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-""".strip()
-
-
-def _ensure_schema_migrations(conn) -> None:
+def ensure_schema_migrations(conn) -> None:
     with conn.cursor() as cur:
-        cur.execute(SCHEMA_MIGRATIONS_DDL)
-
-
-def _get_applied(conn) -> set[str]:
-    with conn.cursor() as cur:
-        cur.execute("SELECT filename FROM schema_migrations")
-        return {r[0] for r in cur.fetchall()}
-
-
-def _apply_file(conn, path: Path) -> None:
-    sql = path.read_text(encoding="utf-8")
-    with conn.cursor() as cur:
-        cur.execute(sql)
         cur.execute(
-            "INSERT INTO schema_migrations(filename) VALUES (%s) ON CONFLICT DO NOTHING",
-            (path.name,),
+            """
+            create table if not exists schema_migrations (
+              version text primary key,
+              applied_at timestamptz not null default now()
+            );
+            """
         )
 
 
-def main() -> None:
+def list_migration_files() -> List[Path]:
     if not MIGRATIONS_DIR.exists():
-        raise RuntimeError("Diretório migrations/ não encontrado")
+        raise RuntimeError(f"Pasta de migrations não encontrada: {MIGRATIONS_DIR.resolve()}")
+    files = sorted([p for p in MIGRATIONS_DIR.glob("*.sql") if p.is_file()])
+    return files
 
-    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    if not files:
-        raise RuntimeError("Nenhuma migration encontrada em migrations/*.sql")
 
+def already_applied(conn) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute("select version from schema_migrations;")
+        return {r[0] for r in cur.fetchall()}
+
+
+def apply_one(conn, path: Path) -> None:
+    sql = path.read_text(encoding="utf-8").strip()
+    if not sql:
+        print(f"[MIGRATE] SKIP (empty) {path.name}")
+        return
+
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cur.execute("insert into schema_migrations(version) values (%s);", (path.name,))
+
+    print(f"[MIGRATE] OK {path.name}")
+
+
+def main() -> None:
     conn = get_conn()
     conn.autocommit = True
     try:
-        _ensure_schema_migrations(conn)
-        applied = _get_applied(conn)
+        ensure_schema_migrations(conn)
+
+        applied = already_applied(conn)
+        files = list_migration_files()
 
         for f in files:
             if f.name in applied:
                 print(f"[MIGRATE] SKIP {f.name}")
                 continue
-            _apply_file(conn, f)
-            print(f"[MIGRATE] OK {f.name}")
+            apply_one(conn, f)
+
     finally:
         conn.close()
 
