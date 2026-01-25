@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -69,12 +70,22 @@ def _request_json(session: requests.Session, url: str, params: Dict[str, Any], m
 
 
 def insert_raw(cur, endpoint: str, params: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    # api_raw exige payload_sha256 (NOT NULL) e há UNIQUE(endpoint, payload_sha256)
+    payload_bytes = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    payload_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+
     cur.execute(
         """
-        INSERT INTO api_raw (endpoint, params, payload, fetched_at)
-        VALUES (%s, %s::jsonb, %s::jsonb, now())
+        INSERT INTO api_raw (endpoint, params, payload, payload_sha256, fetched_at)
+        VALUES (%s, %s::jsonb, %s::jsonb, %s, now())
+        ON CONFLICT (endpoint, payload_sha256) DO NOTHING
         """,
-        (endpoint, json.dumps(params, ensure_ascii=False), json.dumps(payload, ensure_ascii=False)),
+        (
+            endpoint,
+            json.dumps(params, ensure_ascii=False),
+            json.dumps(payload, ensure_ascii=False),
+            payload_sha256,
+        ),
     )
 
 
