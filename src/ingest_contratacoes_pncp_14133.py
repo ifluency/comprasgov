@@ -19,7 +19,9 @@ MODALIDADES = [int(x.strip()) for x in MODALIDADES_RAW.split(",") if x.strip()]
 PAGE_SIZE = int(os.getenv("COMPRAS_PAGE_SIZE", "500"))
 TIMEOUT = int(os.getenv("COMPRAS_TIMEOUT", "60"))
 
-START_DATE = os.getenv("COMPRAS_START_DATE", "2024-01-01")
+# Por padrão, buscamos um histórico maior (a partir de 2021), conforme alinhado.
+# Pode ser sobrescrito via COMPRAS_START_DATE.
+START_DATE = os.getenv("COMPRAS_START_DATE", "2021-01-01")
 MAX_WINDOW_DAYS = int(os.getenv("COMPRAS_MAX_WINDOW_DAYS", "365"))
 SLEEP_S = float(os.getenv("COMPRAS_SLEEP_S", "0.10"))
 
