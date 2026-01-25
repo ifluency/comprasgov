@@ -1,238 +1,210 @@
-#!/usr/bin/env python
-"""Ingest de ITENS das contratações (PNCP 14.133) para a unidade 155125.
+"""Ingest itens de contratações PNCP (Lei 14.133) por idCompra.
 
 Endpoint:
-  /modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id?tipo=idCompra&codigo=<idCompra>
+  /modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id
+Params:
+  tipo=idCompra
+  codigo=<id_compra>
 
-Regras:
-- Lê todos os id_compra já carregados em contratacao_pncp_14133 (coluna id_compra).
-- Para cada id_compra, chama o endpoint e salva:
-    1) registro completo em api_raw
-    2) itens normalizados em contratacao_pncp_14133_item
+Fonte do id_compra:
+  tabela contratacao_pncp_14133 (coluna id_compra)
 
-Observação:
-- Não criamos views agora; objetivo é deixar o ETL funcionando.
+Env:
+  DATABASE_URL (obrigatório)
+  COMPRAS_BASE_URL (default https://dadosabertos.compras.gov.br)
+  COMPRAS_SLEEP_S (default 0.10)
+  COMPRAS_ITEM_LIMIT (opcional) -> limita quantas compras serão processadas
 """
 
-import datetime as dt
-import hashlib
+from __future__ import annotations
+
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
 from db import get_conn
 
+
 BASE_URL = os.getenv("COMPRAS_BASE_URL", "https://dadosabertos.compras.gov.br").rstrip("/")
-PATH_ITENS = os.getenv(
-    "COMPRAS_ITENS_PATH",
-    "/modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id",
-)
-TIMEOUT = float(os.getenv("COMPRAS_TIMEOUT_S", "60"))
-SLEEP_S = float(os.getenv("COMPRAS_SLEEP_S", "0.10"))
-
-# Para rodar em lotes/CI (opcional)
-LIMIT_IDS = int(os.getenv("COMPRAS_ITENS_LIMIT_IDS", "0"))  # 0 = sem limite
-ONLY_MISSING = os.getenv("COMPRAS_ITENS_ONLY_MISSING", "true").lower() in ("1", "true", "yes", "y")
+ITEM_PATH = "/modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id"
 
 
-def sha256_json(obj) -> str:
-    raw = json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
-
-def parse_dt(s: Optional[str]) -> Optional[dt.datetime]:
-    if not s:
-        return None
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
     try:
-        # Ex.: "2025-11-07T07:11:18" (sem timezone) ou "2025-03-18T01:15:28"
-        # Mantemos como naive (interpretação local) ou ISO completo. Se vier com Z, converte.
-        if isinstance(s, str) and s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        return dt.datetime.fromisoformat(s)
-    except Exception:
-        return None
+        return float(v)
+    except ValueError:
+        return default
 
 
-def make_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
-        {
-            "Accept": "application/json",
-            "Accept-Language": "pt-BR,pt;q=0.9",
-            "User-Agent": "comprasgov-ingestor/1.0",
-        }
+def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
+
+
+def _request_json(session: requests.Session, url: str, params: Dict[str, Any], max_attempts: int = 5) -> Dict[str, Any]:
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = session.get(url, params=params, timeout=60)
+            print(f"[HTTP] attempt={attempt} status={resp.status_code} url={resp.url}")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            last_err = e
+            # backoff simples
+            time.sleep(min(2.0 * attempt, 10.0))
+    raise RuntimeError(f"Falha ao chamar {url} params={params}. Último erro: {last_err}")
+
+
+def insert_raw(cur, endpoint: str, params: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    cur.execute(
+        """
+        INSERT INTO api_raw (endpoint, params, payload, fetched_at)
+        VALUES (%s, %s::jsonb, %s::jsonb, now())
+        """,
+        (endpoint, json.dumps(params, ensure_ascii=False), json.dumps(payload, ensure_ascii=False)),
     )
-    return s
 
 
-def get_with_retry(session: requests.Session, url: str, params: Dict[str, Any]) -> requests.Response:
-    max_tries = 5
-    backoff = 2.0
-    for attempt in range(1, max_tries + 1):
-        r = session.get(url, params=params, timeout=TIMEOUT)
-        print(f"[HTTP] attempt={attempt} status={r.status_code} url={r.url}", flush=True)
-
-        if r.status_code in (429, 500, 502, 503, 504) and attempt < max_tries:
-            time.sleep(backoff)
-            backoff *= 2
-            continue
-        return r
-
-    return r
-
-
-def ensure_tables(conn):
-    # Garante a existência, caso alguém rode ingest sem migrate (defensivo)
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS contratacao_pncp_14133_item (
-              id_compra              TEXT NOT NULL,
-              id_compra_item         TEXT NOT NULL,
-              data_inclusao_pncp     TIMESTAMPTZ NULL,
-              data_atualizacao_pncp  TIMESTAMPTZ NULL,
-              fetched_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              raw_json               JSONB NOT NULL,
-              PRIMARY KEY (id_compra_item)
-            );
-            """
+def upsert_item(cur, item: Dict[str, Any]) -> None:
+    # Persistimos o JSON bruto + alguns campos úteis como colunas.
+    cur.execute(
+        """
+        INSERT INTO contratacao_item_pncp_14133 (
+          id_compra_item,
+          id_compra,
+          numero_item_pncp,
+          numero_item_compra,
+          descricao_resumida,
+          material_ou_servico,
+          cod_item_catalogo,
+          cod_fornecedor,
+          nome_fornecedor,
+          valor_total,
+          valor_total_resultado,
+          data_inclusao_pncp,
+          data_atualizacao_pncp,
+          raw_json
+        ) VALUES (
+          %(idCompraItem)s,
+          %(idCompra)s,
+          %(numeroItemPncp)s,
+          %(numeroItemCompra)s,
+          %(descricaoResumida)s,
+          %(materialOuServico)s,
+          %(codItemCatalogo)s,
+          %(codFornecedor)s,
+          %(nomeFornecedor)s,
+          %(valorTotal)s,
+          %(valorTotalResultado)s,
+          %(dataInclusaoPncp)s,
+          %(dataAtualizacaoPncp)s,
+          %(raw_json)s::jsonb
         )
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_item_id_compra ON contratacao_pncp_14133_item (id_compra);")
-    conn.commit()
+        ON CONFLICT (id_compra_item) DO UPDATE SET
+          id_compra = EXCLUDED.id_compra,
+          numero_item_pncp = EXCLUDED.numero_item_pncp,
+          numero_item_compra = EXCLUDED.numero_item_compra,
+          descricao_resumida = EXCLUDED.descricao_resumida,
+          material_ou_servico = EXCLUDED.material_ou_servico,
+          cod_item_catalogo = EXCLUDED.cod_item_catalogo,
+          cod_fornecedor = EXCLUDED.cod_fornecedor,
+          nome_fornecedor = EXCLUDED.nome_fornecedor,
+          valor_total = EXCLUDED.valor_total,
+          valor_total_resultado = EXCLUDED.valor_total_resultado,
+          data_inclusao_pncp = EXCLUDED.data_inclusao_pncp,
+          data_atualizacao_pncp = EXCLUDED.data_atualizacao_pncp,
+          raw_json = EXCLUDED.raw_json
+        """,
+        {
+            "idCompraItem": item.get("idCompraItem"),
+            "idCompra": item.get("idCompra"),
+            "numeroItemPncp": item.get("numeroItemPncp"),
+            "numeroItemCompra": item.get("numeroItemCompra"),
+            "descricaoResumida": item.get("descricaoResumida"),
+            "materialOuServico": item.get("materialOuServico"),
+            "codItemCatalogo": item.get("codItemCatalogo"),
+            "codFornecedor": item.get("codFornecedor"),
+            "nomeFornecedor": item.get("nomeFornecedor"),
+            "valorTotal": item.get("valorTotal"),
+            "valorTotalResultado": item.get("valorTotalResultado"),
+            "dataInclusaoPncp": item.get("dataInclusaoPncp"),
+            "dataAtualizacaoPncp": item.get("dataAtualizacaoPncp"),
+            "raw_json": json.dumps(item, ensure_ascii=False),
+        },
+    )
 
 
-def load_id_compras(conn) -> List[str]:
-    with conn.cursor() as cur:
-        if ONLY_MISSING:
-            cur.execute(
-                """
-                SELECT c.id_compra
-                FROM contratacao_pncp_14133 c
-                LEFT JOIN contratacao_pncp_14133_item i ON i.id_compra = c.id_compra
-                WHERE c.id_compra IS NOT NULL
-                  AND i.id_compra IS NULL
-                ORDER BY c.data_publicacao_pncp NULLS LAST, c.id_compra;
-                """
-            )
-        else:
-            cur.execute(
-                """
-                SELECT id_compra
-                FROM contratacao_pncp_14133
-                WHERE id_compra IS NOT NULL
-                ORDER BY data_publicacao_pncp NULLS LAST, id_compra;
-                """
-            )
-        rows = cur.fetchall()
-    ids = [r[0] for r in rows if r and r[0]]
-    if LIMIT_IDS > 0:
-        ids = ids[:LIMIT_IDS]
-    return ids
+def iter_id_compra(conn, limit: Optional[int] = None) -> Iterable[str]:
+    sql = "SELECT id_compra FROM contratacao_pncp_14133 ORDER BY data_publicacao_pncp ASC"
+    if limit is not None:
+        sql += " LIMIT %s"
+        with conn.cursor() as cur:
+            cur.execute(sql, (limit,))
+            for (id_compra,) in cur.fetchall():
+                yield id_compra
+    else:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            for (id_compra,) in cur.fetchall():
+                yield id_compra
 
 
-def upsert_api_raw(conn, url: str, params: Dict[str, Any], payload: Dict[str, Any]):
-    sha = sha256_json(payload)
-    now = dt.datetime.utcnow()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO api_raw (source, url, params_json, payload_json, sha256, fetched_at)
-            VALUES (%s, %s, %s::jsonb, %s::jsonb, %s, %s)
-            ON CONFLICT (sha256) DO NOTHING;
-            """,
-            (
-                "itens_contratacoes_pncp_14133",
-                url,
-                json.dumps(params, ensure_ascii=False),
-                json.dumps(payload, ensure_ascii=False),
-                sha,
-                now,
-            ),
-        )
-    conn.commit()
+def main() -> None:
+    sleep_s = _env_float("COMPRAS_SLEEP_S", 0.10)
+    limit = _env_int("COMPRAS_ITEM_LIMIT", None)
 
-
-def upsert_items(conn, id_compra: str, itens: List[Dict[str, Any]]):
-    if not itens:
-        return
-    with conn.cursor() as cur:
-        for it in itens:
-            id_compra_item = it.get("idCompraItem")
-            if not id_compra_item:
-                continue
-            di = parse_dt(it.get("dataInclusaoPncp"))
-            da = parse_dt(it.get("dataAtualizacaoPncp"))
-            cur.execute(
-                """
-                INSERT INTO contratacao_pncp_14133_item (
-                  id_compra,
-                  id_compra_item,
-                  data_inclusao_pncp,
-                  data_atualizacao_pncp,
-                  raw_json
-                ) VALUES (%s, %s, %s, %s, %s::jsonb)
-                ON CONFLICT (id_compra_item) DO UPDATE SET
-                  id_compra = EXCLUDED.id_compra,
-                  data_inclusao_pncp = EXCLUDED.data_inclusao_pncp,
-                  data_atualizacao_pncp = EXCLUDED.data_atualizacao_pncp,
-                  raw_json = EXCLUDED.raw_json,
-                  fetched_at = NOW();
-                """,
-                (
-                    id_compra,
-                    id_compra_item,
-                    di,
-                    da,
-                    json.dumps(it, ensure_ascii=False),
-                ),
-            )
-    conn.commit()
-
-
-def main():
-    url = f"{BASE_URL}{PATH_ITENS}"
+    print("[ITENS] START")
+    print(f"[ITENS] BASE_URL={BASE_URL}")
+    print(f"[ITENS] ITEM_PATH={ITEM_PATH}")
+    if limit is not None:
+        print(f"[ITENS] limit={limit}")
 
     conn = get_conn()
-    ensure_tables(conn)
-
-    ids = load_id_compras(conn)
-    print(f"[LOAD] id_compra_count={len(ids)} only_missing={ONLY_MISSING} limit_ids={LIMIT_IDS}", flush=True)
-
-    session = make_session()
+    session = requests.Session()
 
     ok = 0
     fail = 0
+    total_items = 0
 
-    for idx, id_compra in enumerate(ids, start=1):
-        params = {"tipo": "idCompra", "codigo": id_compra}
-        try:
-            r = get_with_retry(session, url, params)
-            if r.status_code != 200:
-                print(f"[ERR] id_compra={id_compra} status={r.status_code} body={r.text[:500]}", flush=True)
+    try:
+        for id_compra in iter_id_compra(conn, limit=limit):
+            url = f"{BASE_URL}{ITEM_PATH}"
+            params = {"tipo": "idCompra", "codigo": id_compra}
+            try:
+                payload = _request_json(session, url, params)
+                results = payload.get("resultado") or []
+                print(f"[ITENS] id_compra={id_compra} items={len(results)}")
+
+                with conn.cursor() as cur:
+                    insert_raw(cur, f"modulo-contratacoes/2.1_consultarItensContratacoes_PNCP_14133_Id", params, payload)
+                    for item in results:
+                        upsert_item(cur, item)
+                conn.commit()
+
+                ok += 1
+                total_items += len(results)
+            except Exception as e:
+                conn.rollback()
                 fail += 1
-                time.sleep(SLEEP_S)
-                continue
+                print(f"[EXC] id_compra={id_compra} err={e}")
+            time.sleep(sleep_s)
 
-            payload = r.json()
-            upsert_api_raw(conn, url, params, payload)
-
-            itens = payload.get("resultado") or []
-            upsert_items(conn, id_compra, itens)
-
-            ok += 1
-            if idx % 25 == 0:
-                print(f"[PROGRESS] {idx}/{len(ids)} ok={ok} fail={fail}", flush=True)
-
-        except Exception as e:
-            print(f"[EXC] id_compra={id_compra} err={e}", flush=True)
-            fail += 1
-
-        time.sleep(SLEEP_S)
-
-    print(f"[DONE] ok={ok} fail={fail}", flush=True)
+        print(f"[DONE] ok={ok} fail={fail} itens={total_items}")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
