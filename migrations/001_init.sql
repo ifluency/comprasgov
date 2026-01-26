@@ -1,98 +1,118 @@
+-- 001_init.sql
+-- Schema limpo para:
+-- - schema_migrations
+-- - api_raw
+-- - contratacao_pncp_14133
+-- - contratacao_item_pncp_14133
+
+create table if not exists schema_migrations (
+  filename text primary key,
+  applied_at timestamptz not null default now()
+);
+
 create table if not exists api_raw (
   id bigserial primary key,
   endpoint text not null,
-  params jsonb not null,
+  params jsonb not null default '{}'::jsonb,
   payload jsonb not null,
   payload_sha256 text not null,
-  fetched_at timestamptz not null default now()
+  fetched_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
 );
 
-create index if not exists idx_api_raw_endpoint on api_raw (endpoint);
-create index if not exists idx_api_raw_fetched_at on api_raw (fetched_at);
+create table if not exists contratacao_pncp_14133 (
+  id_compra text primary key,
 
-create table if not exists etl_state (
-  name text primary key,
-  value jsonb not null,
+  numero_controle_pncp text,
+  codigo_modalidade integer,
+  modalidade_nome text,
+
+  unidade_orgao_codigo_unidade text,
+  unidade_orgao_nome_unidade text,
+  unidade_orgao_uf_sigla text,
+  unidade_orgao_municipio_nome text,
+  unidade_orgao_codigo_ibge integer,
+
+  orgao_entidade_cnpj text,
+  codigo_orgao integer,
+  orgao_entidade_razao_social text,
+
+  numero_compra text,
+  processo text,
+
+  srp boolean,
+  objeto_compra text,
+
+  data_inclusao_pncp timestamptz,
+  data_atualizacao_pncp timestamptz,
+  data_publicacao_pncp timestamptz,
+  data_abertura_proposta_pncp timestamptz,
+  data_encerramento_proposta_pncp timestamptz,
+
+  valor_total_estimado numeric,
+  valor_total_homologado numeric,
+
+  contratacao_excluida boolean,
+
+  raw_json jsonb not null,
+
+  created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
--- Contratações PNCP 14.133 (endpoint: modulo-contratacoes/1_consultarContratacoes_PNCP_14133)
-create table if not exists contratacao_pncp_14133 (
-  id bigserial primary key,
+create table if not exists contratacao_item_pncp_14133 (
+  id_compra_item text primary key,
+  id_compra text not null references contratacao_pncp_14133(id_compra) on delete cascade,
 
-  -- chave natural (estável no payload real)
-  numero_controle_pncp text not null unique,
+  numero_item_pncp integer,
+  numero_item_compra integer,
+  numero_grupo integer,
 
-  -- compra / PNCP
-  id_compra text null,
-  ano_compra_pncp integer null,
-  sequencial_compra_pncp integer null,
+  descricao_resumida text,
+  material_ou_servico text,
+  material_ou_servico_nome text,
 
-  -- órgão / unidade
-  orgao_entidade_cnpj text null,
-  orgao_subrogado_cnpj text null,
-  codigo_orgao integer null,
-  orgao_entidade_razao_social text null,
-  orgao_subrogado_razao_social text null,
-  orgao_entidade_esfera_id text null,
-  orgao_subrogado_esfera_id text null,
-  orgao_entidade_poder_id text null,
-  orgao_subrogado_poder_id text null,
+  codigo_classe integer,
+  codigo_grupo integer,
+  cod_item_catalogo integer,
 
-  unidade_orgao_codigo_unidade text not null,
-  unidade_subrogada_codigo_unidade text null,
-  unidade_orgao_nome_unidade text null,
-  unidade_subrogada_nome_unidade text null,
-  unidade_orgao_uf_sigla text null,
-  unidade_subrogada_uf_sigla text null,
-  unidade_orgao_municipio_nome text null,
-  unidade_subrogada_municipio_nome text null,
-  unidade_orgao_codigo_ibge integer null,
-  unidade_subrogada_codigo_ibge integer null,
+  unidade_medida text,
+  orcamento_sigiloso boolean,
 
-  -- compra (campos usuais)
-  numero_compra text null,
-  modalidade_id_pncp integer null,
-  codigo_modalidade integer not null,
-  modalidade_nome text null,
-  srp boolean null,
+  item_categoria_id_pncp integer,
+  item_categoria_nome text,
 
-  modo_disputa_id_pncp integer null,
-  codigo_modo_disputa integer null,
-  modo_disputa_nome text null,
+  criterio_julgamento_id_pncp integer,
+  criterio_julgamento_nome text,
 
-  amparo_legal_codigo_pncp integer null,
-  amparo_legal_nome text null,
-  amparo_legal_descricao text null,
+  situacao_compra_item text,
+  situacao_compra_item_nome text,
 
-  processo text null,
-  objeto_compra text null,
-  informacao_complementar text null,
+  tipo_beneficio text,
+  tipo_beneficio_nome text,
 
-  existe_resultado boolean null,
+  incentivo_produtivo_basico boolean,
 
-  orcamento_sigiloso_codigo integer null,
-  orcamento_sigiloso_descricao text null,
+  quantidade numeric,
+  valor_unitario_estimado numeric,
+  valor_total numeric,
 
-  situacao_compra_id_pncp integer null,
-  situacao_compra_nome_pncp text null,
+  tem_resultado boolean,
 
-  tipo_instrumento_convocatorio_codigo_pncp integer null,
-  tipo_instrumento_convocatorio_nome text null,
+  cod_fornecedor text,
+  nome_fornecedor text,
 
-  valor_total_estimado numeric(18,2) null,
-  valor_total_homologado numeric(18,2) null,
+  quantidade_resultado numeric,
+  valor_unitario_resultado numeric,
+  valor_total_resultado numeric,
 
-  data_inclusao_pncp timestamptz null,
-  data_atualizacao_pncp timestamptz null,
-  data_publicacao_pncp timestamptz null,
-  data_abertura_proposta_pncp timestamptz null,
-  data_encerramento_proposta_pncp timestamptz null,
+  data_inclusao_pncp timestamptz,
+  data_atualizacao_pncp timestamptz,
 
-  contratacao_excluida boolean null,
+  numero_controle_pncp_compra text,
 
-  payload_sha256 text not null,
-  payload jsonb not null,
-  first_seen_at timestamptz not null default now(),
-  last_seen_at timestamptz not null default now()
+  raw_json jsonb not null,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
