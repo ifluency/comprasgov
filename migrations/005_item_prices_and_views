@@ -1,0 +1,123 @@
+-- 005_item_prices_and_views.sql
+-- Objetivo:
+-- 1) Persistir valores unitários (estimado e resultado/licitação) e campos úteis do item;
+-- 2) Criar views prontas para consumo pelo app (histórico + último preço por CATMAT).
+
+BEGIN;
+
+-- 1) Novas colunas (mantemos também os totais já existentes)
+ALTER TABLE IF EXISTS contratacao_item_pncp_14133
+  ADD COLUMN IF NOT EXISTS valor_unitario_estimado NUMERIC,
+  ADD COLUMN IF NOT EXISTS valor_unitario_resultado NUMERIC,
+  ADD COLUMN IF NOT EXISTS data_resultado DATE,
+  ADD COLUMN IF NOT EXISTS situacao_compra_item_nome TEXT,
+  ADD COLUMN IF NOT EXISTS tem_resultado BOOLEAN;
+
+-- 2) Backfill a partir do raw_json (não sobrescreve se já tiver)
+UPDATE contratacao_item_pncp_14133
+SET
+  valor_unitario_estimado = COALESCE(
+    valor_unitario_estimado,
+    NULLIF(raw_json->>'valorUnitarioEstimado','')::NUMERIC
+  ),
+  valor_unitario_resultado = COALESCE(
+    valor_unitario_resultado,
+    NULLIF(raw_json->>'valorUnitarioResultado','')::NUMERIC
+  ),
+  data_resultado = COALESCE(
+    data_resultado,
+    CASE
+      WHEN NULLIF(raw_json->>'dataResultado','') IS NULL THEN NULL
+      ELSE (substring(raw_json->>'dataResultado' from 1 for 10))::DATE
+    END
+  ),
+  situacao_compra_item_nome = COALESCE(
+    situacao_compra_item_nome,
+    NULLIF(raw_json->>'situacaoCompraItemNome','')
+  ),
+  tem_resultado = COALESCE(
+    tem_resultado,
+    CASE
+      WHEN NULLIF(raw_json->>'temResultado','') IS NULL THEN NULL
+      ELSE (raw_json->>'temResultado')::BOOLEAN
+    END
+  );
+
+-- Helper de formatação numérica pt-BR (milhar '.' e decimal ',')
+-- (to_char em locale padrão costuma usar ',' milhar e '.' decimal)
+-- A gente faz swap: ',' -> X, '.' -> ',', X -> '.'
+
+-- 3) View: histórico por CATMAT (um registro por item/compra)
+CREATE OR REPLACE VIEW vw_item_preco_historico_catmat AS
+SELECT
+  i.cod_item_catalogo                               AS catmat,
+  i.data_resultado                                  AS data_resultado,
+  to_char(i.data_resultado, 'DD/MM/YYYY')           AS data_resultado_fmt,
+
+  -- Pregão derivado de id_compra:
+  -- 5 dígitos antes do ano; se começa com 9, remove o 9.
+  (
+    lpad(
+      (
+        CASE
+          WHEN left(substring(i.id_compra from char_length(i.id_compra)-8 for 5), 1) = '9'
+            THEN substring(substring(i.id_compra from char_length(i.id_compra)-8 for 5) from 2 for 4)
+          ELSE substring(i.id_compra from char_length(i.id_compra)-8 for 5)
+        END
+      )::int::text,
+      3,
+      '0'
+    )
+    || '/'
+    || right(i.id_compra, 4)
+  )                                                 AS pregao,
+
+  i.numero_item_pncp                                AS numero_item_pncp,
+
+  i.valor_unitario_estimado                         AS valor_estimado_num,
+  replace(replace(replace(to_char(i.valor_unitario_estimado, 'FM999G999G999D00'), ',', 'X'), '.', ','), 'X', '.') AS valor_estimado_fmt,
+
+  i.valor_unitario_resultado                        AS valor_licitado_num,
+  replace(replace(replace(to_char(i.valor_unitario_resultado, 'FM999G999G999D00'), ',', 'X'), '.', ','), 'X', '.') AS valor_licitado_fmt,
+
+  i.descricao_resumida                              AS descricao_resumida,
+  i.situacao_compra_item_nome                       AS situacao_compra_item_nome,
+  i.tem_resultado                                   AS tem_resultado,
+  i.nome_fornecedor                                 AS nome_fornecedor,
+
+  i.id_compra                                       AS id_compra,
+  ('https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/public/compras/acompanhamento-compra?compra=' || i.id_compra) AS compra_link
+
+FROM contratacao_item_pncp_14133 i;
+
+-- 4) View: último preço por CATMAT (prioriza data_resultado mais recente)
+CREATE OR REPLACE VIEW vw_item_preco_ultimo_catmat AS
+WITH base AS (
+  SELECT
+    h.*,
+    row_number() OVER (
+      PARTITION BY h.catmat
+      ORDER BY h.data_resultado DESC NULLS LAST, h.id_compra DESC
+    ) AS rn
+  FROM vw_item_preco_historico_catmat h
+)
+SELECT
+  catmat,
+  data_resultado,
+  data_resultado_fmt,
+  pregao,
+  numero_item_pncp,
+  valor_estimado_num,
+  valor_estimado_fmt,
+  valor_licitado_num,
+  valor_licitado_fmt,
+  descricao_resumida,
+  situacao_compra_item_nome,
+  tem_resultado,
+  nome_fornecedor,
+  id_compra,
+  compra_link
+FROM base
+WHERE rn = 1;
+
+COMMIT;
