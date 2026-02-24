@@ -3,7 +3,7 @@ import os
 import time
 import hashlib
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -45,7 +45,8 @@ def _parse_modalidades(s: str) -> List[int]:
             out.append(int(part))
         except ValueError:
             pass
-    return out or [5, 6, 7]
+    # Default do projeto (a partir de 2026-02): somente modalidade 5.
+    return out or [5]
 
 
 def _parse_date(s: str) -> date:
@@ -170,20 +171,18 @@ def upsert_contratacao(cur, item: Dict[str, Any]) -> None:
           raw_json = excluded.raw_json,
           updated_at = now()
         """,
-        {
-            **item,
-            "raw_json": json.dumps(item, ensure_ascii=False),
-        },
+        {**item, "raw_json": json.dumps(item, ensure_ascii=False)},
     )
 
 
 def main() -> None:
     unidade = os.getenv("COMPRAS_UNIDADE", "155125")
-    modalidades = _parse_modalidades(os.getenv("COMPRAS_MODALIDADES", "5,6,7"))
+    modalidades = _parse_modalidades(os.getenv("COMPRAS_MODALIDADES", "5"))
     page_size = _env_int("COMPRAS_PAGE_SIZE", 500)
     sleep_s = _env_float("COMPRAS_SLEEP_S", 0.10)
 
-    start_date = _parse_date(os.getenv("COMPRAS_START_DATE", "2021-01-01"))
+    # Default incremental (você já rodou backfill desde 2021; agora mantém janela recente)
+    start_date = _parse_date(os.getenv("COMPRAS_START_DATE", "2025-06-06"))
     max_window_days = _env_int("COMPRAS_MAX_WINDOW_DAYS", 365)
 
     print("[CONTRATACOES] START")
