@@ -36,7 +36,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _parse_modalidades(s: str) -> List[int]:
-    out = []
+    out: List[int] = []
     for part in (s or "").split(","):
         part = part.strip()
         if not part:
@@ -45,7 +45,7 @@ def _parse_modalidades(s: str) -> List[int]:
             out.append(int(part))
         except ValueError:
             pass
-    # Default do projeto (a partir de 2026-02): somente modalidade 5.
+    # Default do projeto (após ajuste): somente modalidade 5.
     return out or [5]
 
 
@@ -73,9 +73,9 @@ def insert_raw(cur, endpoint: str, params: Dict[str, Any], payload: Dict[str, An
 
     cur.execute(
         """
-        insert into api_raw(endpoint, params, payload, payload_sha256, fetched_at)
-        values (%s, %s::jsonb, %s::jsonb, %s, now())
-        on conflict (endpoint, payload_sha256) do nothing
+        INSERT INTO api_raw(endpoint, params, payload, payload_sha256, fetched_at)
+        VALUES (%s, %s::jsonb, %s::jsonb, %s, now())
+        ON CONFLICT (endpoint, payload_sha256) DO NOTHING
         """,
         (
             endpoint,
@@ -87,9 +87,10 @@ def insert_raw(cur, endpoint: str, params: Dict[str, Any], payload: Dict[str, An
 
 
 def upsert_contratacao(cur, item: Dict[str, Any]) -> None:
+    # Mantém raw_json no registro para auditoria.
     cur.execute(
         """
-        insert into contratacao_pncp_14133 (
+        INSERT INTO contratacao_pncp_14133 (
           id_compra,
           numero_controle_pncp,
           codigo_modalidade,
@@ -116,7 +117,7 @@ def upsert_contratacao(cur, item: Dict[str, Any]) -> None:
           contratacao_excluida,
           raw_json,
           updated_at
-        ) values (
+        ) VALUES (
           %(idCompra)s,
           %(numeroControlePNCP)s,
           %(codigoModalidade)s,
@@ -144,31 +145,31 @@ def upsert_contratacao(cur, item: Dict[str, Any]) -> None:
           %(raw_json)s::jsonb,
           now()
         )
-        on conflict (id_compra) do update set
-          numero_controle_pncp = excluded.numero_controle_pncp,
-          codigo_modalidade = excluded.codigo_modalidade,
-          modalidade_nome = excluded.modalidade_nome,
-          unidade_orgao_codigo_unidade = excluded.unidade_orgao_codigo_unidade,
-          unidade_orgao_nome_unidade = excluded.unidade_orgao_nome_unidade,
-          unidade_orgao_uf_sigla = excluded.unidade_orgao_uf_sigla,
-          unidade_orgao_municipio_nome = excluded.unidade_orgao_municipio_nome,
-          unidade_orgao_codigo_ibge = excluded.unidade_orgao_codigo_ibge,
-          orgao_entidade_cnpj = excluded.orgao_entidade_cnpj,
-          codigo_orgao = excluded.codigo_orgao,
-          orgao_entidade_razao_social = excluded.orgao_entidade_razao_social,
-          numero_compra = excluded.numero_compra,
-          processo = excluded.processo,
-          srp = excluded.srp,
-          objeto_compra = excluded.objeto_compra,
-          data_inclusao_pncp = excluded.data_inclusao_pncp,
-          data_atualizacao_pncp = excluded.data_atualizacao_pncp,
-          data_publicacao_pncp = excluded.data_publicacao_pncp,
-          data_abertura_proposta_pncp = excluded.data_abertura_proposta_pncp,
-          data_encerramento_proposta_pncp = excluded.data_encerramento_proposta_pncp,
-          valor_total_estimado = excluded.valor_total_estimado,
-          valor_total_homologado = excluded.valor_total_homologado,
-          contratacao_excluida = excluded.contratacao_excluida,
-          raw_json = excluded.raw_json,
+        ON CONFLICT (id_compra) DO UPDATE SET
+          numero_controle_pncp = EXCLUDED.numero_controle_pncp,
+          codigo_modalidade = EXCLUDED.codigo_modalidade,
+          modalidade_nome = EXCLUDED.modalidade_nome,
+          unidade_orgao_codigo_unidade = EXCLUDED.unidade_orgao_codigo_unidade,
+          unidade_orgao_nome_unidade = EXCLUDED.unidade_orgao_nome_unidade,
+          unidade_orgao_uf_sigla = EXCLUDED.unidade_orgao_uf_sigla,
+          unidade_orgao_municipio_nome = EXCLUDED.unidade_orgao_municipio_nome,
+          unidade_orgao_codigo_ibge = EXCLUDED.unidade_orgao_codigo_ibge,
+          orgao_entidade_cnpj = EXCLUDED.orgao_entidade_cnpj,
+          codigo_orgao = EXCLUDED.codigo_orgao,
+          orgao_entidade_razao_social = EXCLUDED.orgao_entidade_razao_social,
+          numero_compra = EXCLUDED.numero_compra,
+          processo = EXCLUDED.processo,
+          srp = EXCLUDED.srp,
+          objeto_compra = EXCLUDED.objeto_compra,
+          data_inclusao_pncp = EXCLUDED.data_inclusao_pncp,
+          data_atualizacao_pncp = EXCLUDED.data_atualizacao_pncp,
+          data_publicacao_pncp = EXCLUDED.data_publicacao_pncp,
+          data_abertura_proposta_pncp = EXCLUDED.data_abertura_proposta_pncp,
+          data_encerramento_proposta_pncp = EXCLUDED.data_encerramento_proposta_pncp,
+          valor_total_estimado = EXCLUDED.valor_total_estimado,
+          valor_total_homologado = EXCLUDED.valor_total_homologado,
+          contratacao_excluida = EXCLUDED.contratacao_excluida,
+          raw_json = EXCLUDED.raw_json,
           updated_at = now()
         """,
         {**item, "raw_json": json.dumps(item, ensure_ascii=False)},
@@ -181,7 +182,7 @@ def main() -> None:
     page_size = _env_int("COMPRAS_PAGE_SIZE", 500)
     sleep_s = _env_float("COMPRAS_SLEEP_S", 0.10)
 
-    # Default incremental (você já rodou backfill desde 2021; agora mantém janela recente)
+    # Default incremental: você já fez backfill desde 2021; agora manter janela recente.
     start_date = _parse_date(os.getenv("COMPRAS_START_DATE", "2025-06-06"))
     max_window_days = _env_int("COMPRAS_MAX_WINDOW_DAYS", 365)
 
@@ -225,7 +226,9 @@ def main() -> None:
                     pages += 1
 
                     if not results:
-                        print(f"[CONTRATACOES] page={page} items=0 modalidade={modalidade} window={win_start}..{win_end}")
+                        print(
+                            f"[CONTRATACOES] page={page} items=0 modalidade={modalidade} window={win_start}..{win_end}"
+                        )
                         break
 
                     with conn.cursor() as cur:
@@ -235,7 +238,9 @@ def main() -> None:
                             upserts += 1
                     conn.commit()
 
-                    print(f"[CONTRATACOES] page={page} items={len(results)} modalidade={modalidade} window={win_start}..{win_end}")
+                    print(
+                        f"[CONTRATACOES] page={page} items={len(results)} modalidade={modalidade} window={win_start}..{win_end}"
+                    )
 
                     total_pages = payload.get("totalPaginas")
                     if total_pages and isinstance(total_pages, int) and page >= total_pages:
