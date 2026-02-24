@@ -44,19 +44,25 @@ jobs:
         run: |
           # Default: incremental desde 2025-06-06
           START_DATE="2025-06-06"
+          ITEMS_MODE="recent"
+          ITEMS_LOOKBACK_DAYS="15"
 
           # Full backfill se:
           # - schedule do cron de full backfill
           # - ou workflow_dispatch com input full_backfill=true
           if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "30 6 1,16 * *" ]]; then
             START_DATE="2021-01-01"
+            ITEMS_MODE="all"
           fi
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_backfill }}" == "true" ]]; then
             START_DATE="2021-01-01"
+            ITEMS_MODE="all"
           fi
 
           echo "start_date=${START_DATE}" >> "$GITHUB_OUTPUT"
-          echo "Using COMPRAS_START_DATE=${START_DATE}"
+          echo "items_mode=${ITEMS_MODE}" >> "$GITHUB_OUTPUT"
+          echo "items_lookback_days=${ITEMS_LOOKBACK_DAYS}" >> "$GITHUB_OUTPUT"
+          echo "Using COMPRAS_START_DATE=${START_DATE} | COMPRAS_ITEMS_MODE=${ITEMS_MODE} | LOOKBACK=${ITEMS_LOOKBACK_DAYS}d"
 
       - name: Ingest Contratacoes PNCP 14.133
         env:
@@ -76,5 +82,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
           COMPRAS_SLEEP_S: "0.10"
+          COMPRAS_ITEMS_MODE: ${{ steps.window.outputs.items_mode }}
+          COMPRAS_ITEMS_LOOKBACK_DAYS: ${{ steps.window.outputs.items_lookback_days }}
         run: |
           python -u src/ingest_itens_contratacoes_pncp_14133.py
