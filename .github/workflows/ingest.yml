@@ -1,9 +1,17 @@
-name: Ingest Contratacoes PNCP 14.133 (modalidades 5,6,7)
+name: Ingest Contratacoes PNCP 14.133 (modalidade 5)
 
 on:
   workflow_dispatch:
+    inputs:
+      full_backfill:
+        description: "Rodar busca completa (desde 2021-01-01)"
+        required: false
+        default: "false"
   schedule:
+    # Incremental (diário): janela curta a partir de 2025-06-06
     - cron: "30 6 * * *" # 06:30 UTC ~ 03:30 São Paulo
+    # Full backfill (a cada ~15 dias): 1º e 16º dia do mês
+    - cron: "30 6 1,16 * *" # 06:30 UTC ~ 03:30 São Paulo
 
 jobs:
   ingest:
@@ -30,19 +38,38 @@ jobs:
         run: |
           python -u src/migrate.py
 
+      - name: Compute ingest window
+        id: window
+        shell: bash
+        run: |
+          # Default: incremental desde 2025-06-06
+          START_DATE="2025-06-06"
+
+          # Full backfill se:
+          # - schedule do cron de full backfill
+          # - ou workflow_dispatch com input full_backfill=true
+          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "30 6 1,16 * *" ]]; then
+            START_DATE="2021-01-01"
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.full_backfill }}" == "true" ]]; then
+            START_DATE="2021-01-01"
+          fi
+
+          echo "start_date=${START_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Using COMPRAS_START_DATE=${START_DATE}"
+
       - name: Ingest Contratacoes PNCP 14.133
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COMPRAS_BASE_URL: "https://dadosabertos.compras.gov.br"
           COMPRAS_UNIDADE: "155125"
-          COMPRAS_MODALIDADES: "5,6,7"
+          COMPRAS_MODALIDADES: "5"
           COMPRAS_PAGE_SIZE: "500"
-          COMPRAS_START_DATE: "2021-01-01"
+          COMPRAS_START_DATE: ${{ steps.window.outputs.start_date }}
           COMPRAS_MAX_WINDOW_DAYS: "365"
           COMPRAS_SLEEP_S: "0.10"
         run: |
           python -u src/ingest_contratacoes_pncp_14133.py
-
 
       - name: Ingest Itens das Contratacoes (por id_compra)
         env:
