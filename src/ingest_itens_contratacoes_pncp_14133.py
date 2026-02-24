@@ -142,13 +142,32 @@ def upsert_item(cur, item: Dict[str, Any]) -> None:
 
 
 def iter_ids_compra(cur) -> List[str]:
-    cur.execute(
-        """
-        SELECT DISTINCT id_compra
-        FROM contratacao_pncp_14133
-        ORDER BY id_compra
-        """
-    )
+    mode = (os.getenv("COMPRAS_ITEMS_MODE", "recent") or "recent").strip().lower()
+    lookback_days = int(os.getenv("COMPRAS_ITEMS_LOOKBACK_DAYS", "15") or "15")
+
+    if mode in ("all", "full", "backfill"):
+        cur.execute(
+            """
+            SELECT DISTINCT id_compra
+            FROM contratacao_pncp_14133
+            WHERE id_compra IS NOT NULL
+            ORDER BY id_compra
+            """
+        )
+    else:
+        # Incremental: somente compras atualizadas/publicadas nos últimos N dias.
+        # (Se data_atualizacao_pncp for nula, cai em data_publicacao_pncp.)
+        cur.execute(
+            """
+            SELECT DISTINCT id_compra
+            FROM contratacao_pncp_14133
+            WHERE id_compra IS NOT NULL
+              AND COALESCE(data_atualizacao_pncp, data_publicacao_pncp) >= (now() - (%s || ' days')::interval)
+            ORDER BY id_compra
+            """,
+            (lookback_days,),
+        )
+
     return [r[0] for r in cur.fetchall()]
 
 
@@ -162,6 +181,10 @@ def main() -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             ids = iter_ids_compra(cur)
+
+    mode = (os.getenv("COMPRAS_ITEMS_MODE", "recent") or "recent").strip().lower()
+    lookback_days = int(os.getenv("COMPRAS_ITEMS_LOOKBACK_DAYS", "15") or "15")
+    print(f"[ITENS] mode={mode} lookback_days={lookback_days} ids={len(ids)}")
 
     with get_conn() as conn:
         with conn.cursor() as cur:
